@@ -4,7 +4,7 @@ Original concept and project creator: **De Jonckheere Stéphane (humblejok)**.
 
 Copyright © 2026 De Jonckheere Stéphane (humblejok). Licensed under [GNU AGPL-3.0-only](LICENSE). See [NOTICE](NOTICE) for attribution and scope, and [third-party acknowledgements](THIRD_PARTY_NOTICES.md) for Graphify and the integrated tools.
 
-An evidence-first production-readiness workflow for VS Code, GitHub Copilot agents, and Graphify. The runtime kit lives under `.github/`; the repository-root PowerShell installer is a distribution helper. The authoritative output is JSON and the companion `REVIEW.md` is generated for people.
+An evidence-first production-readiness workflow for VS Code, GitHub Copilot agents, and Graphify. The runtime kit lives under `.github/`; the repository-root Windows and macOS/Linux installers are distribution helpers. The authoritative output is JSON and the companion `REVIEW.md` is generated for people.
 
 The kit keeps responsibilities deliberately separate:
 
@@ -136,6 +136,159 @@ Use `-TrustStoreType JKS` or `-TrustStoreType PKCS12` only when the published st
 The HTTPS download itself relies on the Windows certificate store. If Windows does not yet trust the certificate presented by Artifactory, deploy the corporate root/intermediate CA to Windows first through your normal enterprise mechanism; the installer never bypasses TLS validation.
 
 For corporate distribution, Authenticode-sign the final `.ps1` with your organization's code-signing certificate and publish that signed copy. This lets machines using an `AllSigned` execution policy run it without weakening PowerShell policy.
+
+## Install on macOS and Linux from Artifactory
+
+[`install-graphify-review-unix.py`](install-graphify-review-unix.py) is a standalone downloader/installer for macOS and Linux. It requires Python 3.10 or newer and uses only the standard library. Run it as your normal user; it needs neither `sudo`, Homebrew, nor additional Python packages.
+
+Download this installer file and use the same `.github` ZIP and Java `cacerts` artifact as the Windows distribution. Provide their publisher-supplied SHA-256 hashes and your real Artifactory URLs:
+
+```bash
+python3 install-graphify-review-unix.py \
+  --target-repository '/path/to/my-api' \
+  --github-bundle-url 'https://artifactory.example.invalid/artifactory/REPLACE_ME/graphify-review-github.zip' \
+  --github-bundle-sha256 '<64-character-sha256>' \
+  --truststore-url 'https://artifactory.example.invalid/artifactory/REPLACE_ME/cacerts' \
+  --truststore-sha256 '<64-character-sha256>'
+```
+
+For authenticated downloads, supply a short-lived bearer token through `ARTIFACTORY_ACCESS_TOKEN` in the process environment, preferably through your approved secret manager. Do not put tokens in the URLs or command arguments. Use `--token-env VARIABLE_NAME` to select another variable, and unset it after installation. Redirects are refused; use the final artifact download URLs. Windows integrated authentication is not supported by this installer.
+
+To install an approved **raw Unix `jf` executable** (not `jf.exe`, a ZIP, or a tarball), add:
+
+```bash
+  --jfrog-cli-url 'https://artifactory.example.invalid/artifactory/REPLACE_ME/jfrog-cli/{os}-{arch}/jf' \
+  --jfrog-cli-sha256 '<sha256-for-this-exact-platform-and-architecture-binary>'
+```
+
+The optional URL placeholders expand as follows. Adjust the surrounding path to match your Artifactory layout; a single universal checksum is not valid for different binaries.
+
+| Machine | `{os}` | `{arch}` |
+|---|---|---|
+| macOS Apple Silicon | `darwin` | `arm64` |
+| macOS Intel | `darwin` | `amd64` |
+| Linux ARM64 | `linux` | `arm64` |
+| Linux x86-64 | `linux` | `amd64` |
+
+Architecture follows the Python process, so run a native Python on Apple Silicon when you want an ARM64 binary. JFrog installation is optional; an existing configured `jf` can be used without supplying these arguments. The installer never changes the JFrog server configuration.
+
+By default the user installation lives under `~/.local/share/graphify-review/`, containing `truststore/cacerts`, `env.sh`, optional `bin/jf`, and unique `backups/` directories. `--install-root` selects another dedicated directory outside the target project. That path must contain no whitespace or shell metacharacters because Maven expands `MAVEN_OPTS`; the target project path may contain spaces.
+
+All downloads and hashes are verified before installed files change. The installer validates ZIP paths and required license/notice files, backs up the existing `.github` tree and changed user files, merges the kit while retaining unrelated files, and backs out completed file writes if a later write fails. It rejects symlink destinations; users with symlink-managed shell profiles can use `--shell none` and add the environment source line themselves. Backups include a `manifest.json` mapping saved files to original locations. An identical rerun makes no file changes.
+
+The generated Bash/Zsh-compatible `env.sh` preserves existing `MAVEN_OPTS` and appends the managed Java truststore options so they take precedence over earlier truststore settings. Repeated sourcing replaces its previous managed suffix. Optional `--truststore-type JKS` or `PKCS12` adds an explicit store type; no truststore password is persisted. It also adds the user `bin` directory to `PATH` when the installer manages a JFrog binary.
+
+`--shell auto` uses `$SHELL`. For Bash it adds one managed source block to `.bashrc` and the first existing login file among `.bash_profile`, `.bash_login`, and `.profile` (creating `.profile` if none exists). For Zsh it uses `.zprofile` and `.zshrc`, respecting an absolute `ZDOTDIR`. Select `--shell bash` or `--shell zsh` explicitly if needed. Other shells require `--shell none` and their own equivalent environment setup.
+
+After installation, activate the environment in a Bash/Zsh terminal:
+
+```bash
+. "$HOME/.local/share/graphify-review/env.sh"
+```
+
+Use the printed path if you selected a different install root. Fully quit all VS Code instances, then launch from that terminal with `code '/path/to/my-api'`. This ensures Copilot inherits the variables; launching from Finder, the Dock, or a desktop shortcut may not inherit shell settings. The installer cannot update its parent terminal's environment.
+
+For a corporate proxy, use Python's normal proxy discovery (including `https_proxy`/`no_proxy`) or pass `--proxy 'http://proxy.example.invalid:8080'` with the real proxy host. For a private CA, add `--ca-bundle '/path/to/corporate-ca.pem'`. This must be an already trusted **PEM certificate bundle** for the HTTPS connection; the downloaded Java `cacerts` is a different format and cannot bootstrap its own download. TLS verification stays enabled. The installer configures neither Maven repository/proxy settings nor Python package-index settings; retain your existing corporate configuration for those tools.
+
+The review runtime remains `.graphify-review-venv`. It is bootstrapped manually or on the first Copilot command, as described below; an application's `.venv` is not modified by this installer.
+
+## Corporate proxy configuration
+
+Configure the proxy before running the installer or bootstrapping Graphify. Ask your IT team for the proxy host/port, any authentication requirements, the internal hosts that should bypass it, and the approved CA certificates. Replace every `.example.invalid` placeholder below. An `http://` proxy URL is common even for HTTPS destinations: it describes the connection to the proxy, which tunnels HTTPS traffic.
+
+### Proxy environment for Python and JFrog CLI
+
+On macOS/Linux, set these values in the Bash/Zsh terminal that will run the tools:
+
+```bash
+export http_proxy='http://proxy.example.invalid:8080'
+export https_proxy="$http_proxy"
+export no_proxy='localhost,127.0.0.1,artifactory.corp.example.invalid'
+export HTTP_PROXY="$http_proxy"
+export HTTPS_PROXY="$https_proxy"
+export NO_PROXY="$no_proxy"
+```
+
+On Windows, use PowerShell process environment variables:
+
+```powershell
+$env:HTTP_PROXY = 'http://proxy.example.invalid:8080'
+$env:HTTPS_PROXY = $env:HTTP_PROXY
+$env:NO_PROXY = 'localhost,127.0.0.1,artifactory.corp.example.invalid'
+```
+
+Windows environment variable names are case-insensitive. On Unix, setting both cases consistently avoids differing tool preferences. `NO_PROXY` is a comma-separated list of hosts/domains; include your Artifactory host only when your network allows direct access to it. Avoid a blanket `*`. These examples configure the current process and its children. For persistence, place non-secret exports in your user shell configuration, or use Windows **Environment Variables → User variables**. See [pip proxy support](https://pip.pypa.io/en/stable/user_guide/#using-a-proxy-server) and [JFrog CLI proxy configuration](https://docs.jfrog.com/integrations/docs/configuring-the-cli#configure-proxy-support).
+
+### Installer proxy options
+
+For the Windows installer, append these options to the complete installation command above:
+
+```powershell
+-Proxy 'http://proxy.example.invalid:8080' -ProxyUseDefaultCredentials
+```
+
+Use `-ProxyUseDefaultCredentials` only when the proxy accepts your Windows identity; otherwise omit it. `-UseDefaultCredentials` authenticates to the artifact server and is a separate option. The installer's explicit proxy setting applies to its downloads; it does not configure pip, JFrog CLI, Maven, or VS Code globally.
+
+The macOS/Linux installer uses proxy discovery, including the environment above. Alternatively append `--proxy 'http://proxy.example.invalid:8080'` to its installation command. Neither installer accepts credentials embedded in its explicit proxy URL. `ARTIFACTORY_ACCESS_TOKEN` authenticates artifact downloads, not the proxy. For NTLM/Kerberos or other authenticated corporate proxies, use an IT-approved authentication setup for each client; Windows integrated authentication does not automatically carry over to Python or JFrog CLI. Keep proxy passwords out of repository files, shell history, and shared diagnostic output.
+
+### Certificates and the Graphify package download
+
+The proxy route and certificate trust are separate settings. HTTPS inspection may require the corporate CA to be trusted by each client:
+
+| Client | Certificate configuration |
+|---|---|
+| Windows PowerShell installer | Corporate CA in the Windows certificate store |
+| macOS/Linux installer | Python's trusted CA store, or `--ca-bundle '/path/to/corporate-ca.pem'` |
+| pip / Graphify bootstrap | Approved PEM CA bundle through `PIP_CERT`, when needed |
+| Maven | The Java `cacerts` truststore configured by the installer in `MAVEN_OPTS` |
+| JFrog CLI | Corporate CA in its supported trust configuration; see [JFrog TLS setup](https://docs.jfrog.com/integrations/docs/configuring-the-cli#tls-and-certificates) |
+
+For Python package installation through an approved Artifactory PyPI repository, set the following before the first Graphify command. The PEM bundle must include the CA roots required by the package endpoints you use; it is not the binary Java `cacerts` file. [pip certificate configuration](https://pip.pypa.io/en/stable/topics/https-certificates/).
+
+```bash
+export PIP_CERT='/path/to/approved-ca-bundle.pem'
+export PIP_INDEX_URL='https://artifactory.corp.example.invalid/artifactory/api/pypi/REPLACE_ME/simple'
+python3 .github/graphify-review/scripts/bootstrap_environment.py
+```
+
+Windows equivalent:
+
+```powershell
+$env:PIP_CERT = 'C:\certificates\approved-ca-bundle.pem'
+$env:PIP_INDEX_URL = 'https://artifactory.corp.example.invalid/artifactory/api/pypi/REPLACE_ME/simple'
+py -3 .github/graphify-review/scripts/bootstrap_environment.py
+```
+
+Omit `PIP_CERT` if your Python/pip setup already trusts the corporate CA. Omit `PIP_INDEX_URL` if your existing pip configuration already selects the approved repository. Keep your organization's existing package authentication configuration; the installer's bearer token is not automatically supplied to pip. The bootstrapper's pip subprocess inherits these variables. TLS verification should remain enabled.
+
+### Maven and other application package managers
+
+Maven dependency resolution has its own proxy configuration. Merge the following into your user `~/.m2/settings.xml` (Windows: `%USERPROFILE%\.m2\settings.xml`), preserving existing mirrors, servers, and profiles:
+
+```xml
+<settings>
+  <proxies>
+    <proxy>
+      <id>corporate-proxy</id>
+      <active>true</active>
+      <protocol>http</protocol>
+      <host>proxy.example.invalid</host>
+      <port>8080</port>
+      <nonProxyHosts>localhost|127.0.0.1|artifactory.corp.example.invalid</nonProxyHosts>
+    </proxy>
+  </proxies>
+</settings>
+```
+
+Maven uses `|` separators in `nonProxyHosts`, rather than the commas used by `NO_PROXY`. Adapt the bypass hosts to your approved network route. Proxy authentication, if required, belongs in your organization's secured Maven configuration. `MAVEN_OPTS` truststore settings do not configure the proxy itself. [Maven proxy documentation](https://maven.apache.org/guides/mini/guide-proxies.html).
+
+For Gradle, configure the HTTP/HTTPS proxy system properties in the user's `~/.gradle/gradle.properties`; see [Gradle networking](https://docs.gradle.org/current/userguide/networking.html). For .NET restores, retain the corporate package-source and proxy settings in `NuGet.Config`; see [NuGet configuration](https://learn.microsoft.com/en-us/nuget/reference/nuget-config-file). A successful `jf rt ping` does not establish that Maven, Gradle, or NuGet can resolve dependencies during `jf audit`.
+
+### VS Code and troubleshooting
+
+Fully quit VS Code and launch it from a terminal with the configured environment so Copilot's child processes inherit it. Configure the editor's own network access according to [VS Code network settings](https://code.visualstudio.com/docs/setup/network); editor settings alone do not configure external package managers.
+
+Check `jf rt ping --server-id=corp-xray` using your actual configured server ID, then run the Graphify bootstrap and the relevant application dependency resolution. An HTTP `407` indicates proxy authentication; `401`/`403` generally indicate endpoint authentication or authorization; certificate errors indicate trust configuration. If external JFrog extractor downloads are blocked, use the approved `JFROG_CLI_RELEASES_REPO` setup described in [JFrog Xray and secret scanning](#jfrog-xray-and-secret-scanning).
 
 ## Install and run in VS Code
 

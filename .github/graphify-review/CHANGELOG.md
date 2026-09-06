@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.8.0
+
+- Added a standalone Python 3 macOS/Linux downloader and installer with HTTPS/SHA-256 validation, corporate proxy and PEM CA support, validated ZIP handling, backups, and rollback of completed file writes.
+- Added idempotent Bash/Zsh user environment setup for the Java truststore and optional platform-specific JFrog CLI, preserving unrelated repository files and the application's virtual environment.
+- Documented Intel/Apple Silicon and Linux architectures, shell activation, VS Code environment inheritance, and recovery records.
+- Added executable tests for downloads, archive validation, shell behavior, repeated installs, backups, symlink destinations, and rollback failures.
+
 ## 2.7.1
 
 - Licensed the original review kit under GNU AGPL-3.0-only, crediting De Jonckheere Stéphane (humblejok) as its original concept and project creator.

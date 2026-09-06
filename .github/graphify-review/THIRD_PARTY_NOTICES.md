@@ -27,7 +27,7 @@ Their software and service terms remain separate from this kit's license.
 Users obtain and configure these products independently; publishing this kit
 does not grant a subscription or service entitlement.
 
-The PowerShell installer can download a separately supplied JFrog CLI binary.
+The Windows and macOS/Linux installers can download a separately supplied JFrog CLI binary.
 A distributor providing that binary must preserve its applicable license and
 notices. Corporate certificates, truststores, and application review data are
 not licensed by this kit.
