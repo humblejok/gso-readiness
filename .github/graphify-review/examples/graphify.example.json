@@ -1,0 +1,12 @@
+{
+  "nodes": [
+    {"id": "orders", "type": "module", "path": "src/orders.py"},
+    {"id": "pricing", "type": "module", "path": "src/pricing.py"},
+    {"id": "notify", "type": "module", "path": "src/notify.py"}
+  ],
+  "edges": [
+    {"id": "e1", "source": "orders", "target": "pricing", "type": "dependency"},
+    {"id": "e2", "source": "pricing", "target": "orders", "type": "dependency"},
+    {"id": "e3", "source": "orders", "target": "notify", "type": "dependency"}
+  ]
+}

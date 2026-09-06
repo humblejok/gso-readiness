@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "rule_mappings": {
+    "B105": [
+      {"framework": "CWE", "id": "CWE-798", "title": "Use of Hard-coded Credentials"},
+      {"framework": "OWASP Top 10", "id": "A07:2021", "title": "Identification and Authentication Failures"}
+    ],
+    "B608": [
+      {"framework": "CWE", "id": "CWE-89", "title": "Improper Neutralization of Special Elements used in an SQL Command"},
+      {"framework": "OWASP Top 10", "id": "A03:2021", "title": "Injection"}
+    ],
+    "CWE-798": [
+      {"framework": "CWE", "id": "CWE-798", "title": "Use of Hard-coded Credentials"}
+    ]
+  },
+  "cwe_mappings": {
+    "CWE-79": [{"framework": "CWE", "id": "CWE-79", "title": "Improper Neutralization of Input During Web Page Generation"}],
+    "CWE-89": [{"framework": "CWE", "id": "CWE-89", "title": "Improper Neutralization of Special Elements used in an SQL Command"}],
+    "CWE-798": [{"framework": "CWE", "id": "CWE-798", "title": "Use of Hard-coded Credentials"}]
+  }
+}

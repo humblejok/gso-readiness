@@ -1,0 +1,136 @@
+version: 1
+id: aspnet-core-api
+aliases: [asp.net, aspnet, dotnet, dotnet-core-api, net-core-api]
+display_name: ASP.NET Core API
+description: Evidence-based ASP.NET Core API review with .NET dependency injection, request pipeline, data access, async, configuration, and quality rules.
+project_type: api
+detection:
+  file_patterns: ["**/*.csproj", "**/*.sln", "**/*.slnx"]
+  content_markers:
+    - file_patterns: ["**/*.csproj"]
+      contains_any: [Microsoft.NET.Sdk.Web]
+    - file_patterns: ["**/*.cs"]
+      contains_any: [WebApplication.CreateBuilder, AddControllers, MapControllers]
+evidence:
+  manifest_patterns: ["**/*.csproj", "**/*.fsproj", "**/*.sln", "**/*.slnx", "**/packages.lock.json", "**/global.json", "**/Directory.Packages.props"]
+  configuration_patterns: ["**/appsettings.json", "**/appsettings.*.json", "**/launchSettings.json", "**/Directory.Build.props", "**/Directory.Build.targets", "**/.editorconfig"]
+  startup_patterns: ["**/Program.cs", "**/Startup.cs", "**/*Module.cs", "**/*Extensions.cs"]
+  test_patterns: ["**/*Tests.csproj", "**/*Test.csproj", "**/Tests/**/*.cs", "**/Test/**/*.cs"]
+audits:
+  - id: dotnet-build
+    title: Compile the solution without restoring dependencies
+    command: dotnet build --no-restore
+    when_any_files: ["**/*.sln", "**/*.slnx", "**/*.csproj"]
+    evidence_kind: source_analysis
+    required: false
+  - id: dotnet-test
+    title: Execute .NET tests without restoring dependencies
+    command: dotnet test --no-restore
+    when_any_files: ["**/*Tests.csproj", "**/*Test.csproj", "**/*.sln", "**/*.slnx"]
+    evidence_kind: tests_executed
+    required: false
+  - id: dotnet-format
+    title: Verify configured analyzers and formatting
+    command: dotnet format --verify-no-changes --no-restore
+    when_any_files: ["**/*.sln", "**/*.slnx", "**/*.csproj"]
+    evidence_kind: source_analysis
+    required: false
+  - id: dotnet-vulnerable-packages
+    title: Inspect direct and transitive NuGet vulnerabilities
+    command: dotnet list package --vulnerable --include-transitive --no-restore
+    when_any_files: ["**/*.sln", "**/*.slnx", "**/*.csproj"]
+    evidence_kind: dependency_vulnerability_scan
+    required: false
+rules:
+  - id: ASPNET-DI-001
+    title: Dependency resolution and service locator usage
+    categories: [architecture, maintainability]
+    default_technical_quality_impact: material
+    guidance: Prefer explicit constructor or parameter injection. Report IServiceProvider/service-locator resolution only when it hides required dependencies, bypasses lifetime ownership, or makes behavior materially harder to test; framework-owned resolution is not automatically a defect.
+    evidence_required: [registration site, resolution site, affected dependency boundary]
+  - id: ASPNET-DI-002
+    title: Service lifetime compatibility
+    categories: [architecture, correctness]
+    default_technical_quality_impact: systemic
+    guidance: Verify singleton, scoped, and transient ownership across the full dependency chain. Flag captive scoped dependencies, disposed services, or unsafe shared state with concrete registration and consumption evidence.
+    evidence_required: [service registration, constructor chain, request or background execution context]
+  - id: ASPNET-DI-003
+    title: Container construction during registration
+    categories: [architecture, maintainability]
+    default_technical_quality_impact: material
+    guidance: Flag BuildServiceProvider or parallel container creation when it duplicates singleton graphs, breaks scope ownership, or resolves services before registration is complete.
+    evidence_required: [container construction call, surrounding registration flow]
+  - id: ASPNET-ARCH-001
+    title: API boundary and controller responsibility
+    categories: [architecture, maintainability]
+    default_technical_quality_impact: material
+    guidance: Assess whether controllers or endpoints mix transport concerns with substantial business rules, persistence orchestration, or unrelated responsibilities. Do not require MediatR, repositories, interfaces for every class, or a fixed layer count.
+    evidence_required: [controller or endpoint code, collaborating service boundary, repeated responsibility evidence]
+  - id: ASPNET-SOLID-001
+    title: Service cohesion, contracts, and dependency direction
+    categories: [architecture, maintainability]
+    default_technical_quality_impact: material
+    guidance: Check important services for unrelated reasons to change, overly broad interfaces, implementations that violate caller-visible contracts, and business policy directly coupled to replaceable infrastructure. Require a concrete change/test/correctness cost; do not demand interfaces for every class or speculative extension points.
+    evidence_required: [service or interface contract, callers and implementations, demonstrated responsibility or dependency-direction consequence]
+  - id: ASPNET-ASYNC-001
+    title: Async flow and sync-over-async
+    categories: [correctness, operations]
+    default_technical_quality_impact: material
+    guidance: Identify .Result, .Wait, blocking I/O, async void, or unobserved work in request and background paths when it can cause starvation, deadlock, lost failures, or premature completion.
+    evidence_required: [blocking or detached call, caller execution context]
+  - id: ASPNET-ASYNC-002
+    title: Cancellation propagation
+    categories: [correctness, operations]
+    default_technical_quality_impact: localized
+    guidance: Verify request or host cancellation reaches expensive I/O and long-running work. Report missing propagation when the operation is materially cancellable, not merely because a CancellationToken parameter is absent.
+    evidence_required: [entry-point token, downstream cancellable operation]
+  - id: ASPNET-HTTP-001
+    title: Outbound HTTP client ownership and resilience
+    categories: [architecture, operations]
+    default_technical_quality_impact: material
+    guidance: Verify outbound HTTP uses appropriate handler lifetime, timeouts, cancellation, and failure handling. Flag per-request unmanaged HttpClient construction only with evidence of socket/DNS/lifetime risk.
+    evidence_required: [client construction or registration, outbound call path]
+  - id: ASPNET-EF-001
+    title: DbContext lifetime and unit-of-work boundaries
+    categories: [correctness, architecture]
+    default_technical_quality_impact: systemic
+    guidance: Check scoped context ownership, parallel use, background-service scopes, transaction boundaries, and accidental context retention with concrete request or job paths.
+    evidence_required: [DbContext registration, consumption path, execution lifetime]
+  - id: ASPNET-EF-002
+    title: Entity Framework query behavior
+    categories: [correctness, operations, maintainability]
+    default_technical_quality_impact: material
+    guidance: Look for demonstrated N+1 access, unbounded materialization, unnecessary tracking, client-side work, or query-per-item patterns. Infer runtime cost conservatively and record uncertainty.
+    evidence_required: [query construction, iteration or materialization site]
+  - id: ASPNET-CONFIG-001
+    title: Typed options and startup validation
+    categories: [correctness, deployability]
+    default_technical_quality_impact: material
+    guidance: Verify required settings are bound, validated, and fail predictably before serving traffic. Direct IConfiguration access is not automatically a defect; focus on scattered contracts, missing validation, secrets, and runtime-only failure.
+    evidence_required: [configuration binding or access, dependent behavior, deployment configuration]
+  - id: ASPNET-MW-001
+    title: Middleware ordering and API error behavior
+    categories: [correctness, security, operations]
+    default_technical_quality_impact: material
+    guidance: Verify exception handling, forwarded headers, routing, CORS, authentication, authorization, rate limiting, and endpoint mapping order according to the actual hosting model and trust boundary.
+    evidence_required: [Program or Startup pipeline, relevant endpoint or deployment boundary]
+  - id: ASPNET-QUALITY-001
+    title: Nullable analysis and compiler/analyzer policy
+    categories: [maintainability, correctness]
+    default_technical_quality_impact: localized
+    guidance: Assess nullable context, warnings, analyzer configuration, warning suppression, and build enforcement. Score missing safeguards when evidence shows they permit recurring defects or widespread ambiguity, not as a style preference.
+    evidence_required: [project or Directory.Build configuration, representative source evidence]
+scoring:
+  category_caps:
+    - id: aspnet-systemic-architecture
+      category: architecture
+      max_score: 7.0
+      trigger_rule_ids: [ASPNET-DI-001, ASPNET-DI-002, ASPNET-DI-003, ASPNET-ARCH-001, ASPNET-SOLID-001, ASPNET-EF-001]
+      minimum_findings: 1
+      minimum_technical_quality_impact: systemic
+    - id: aspnet-repeated-design-debt
+      category: architecture
+      max_score: 8.0
+      trigger_rule_ids: [ASPNET-DI-001, ASPNET-DI-002, ASPNET-DI-003, ASPNET-ARCH-001, ASPNET-SOLID-001, ASPNET-EF-001]
+      minimum_findings: 3
+      minimum_technical_quality_impact: material

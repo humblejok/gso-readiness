@@ -1,0 +1,19 @@
+version: 1
+id: generic
+aliases: [default]
+display_name: Generic software project
+description: Language- and framework-neutral review rules.
+project_type: generic
+detection:
+  file_patterns: []
+  content_markers: []
+evidence:
+  manifest_patterns: []
+  configuration_patterns: []
+  startup_patterns: []
+  test_patterns: []
+audits: []
+rules: []
+scoring:
+  category_caps: []
+

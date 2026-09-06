@@ -1,0 +1,118 @@
+version: 1
+id: spring-boot
+aliases: [spring, springboot, spring-boot-api]
+display_name: Spring Boot API
+description: Evidence-based Spring Boot API review with Spring dependency injection, transactions, persistence, security, configuration, operations, and quality rules.
+project_type: api
+detection:
+  file_patterns: ["**/pom.xml", "**/build.gradle", "**/build.gradle.kts"]
+  content_markers:
+    - file_patterns: ["**/pom.xml", "**/build.gradle", "**/build.gradle.kts"]
+      contains_any: [spring-boot, org.springframework.boot]
+    - file_patterns: ["**/*.java", "**/*.kt"]
+      contains_any: [SpringApplication.run, "@SpringBootApplication", "@RestController"]
+evidence:
+  manifest_patterns: ["**/pom.xml", "**/build.gradle", "**/build.gradle.kts", "**/settings.gradle", "**/settings.gradle.kts", "**/gradle.lockfile", "**/gradle/libs.versions.toml", "**/mvnw", "**/gradlew"]
+  configuration_patterns: ["**/application.properties", "**/application.yml", "**/application.yaml", "**/application-*.properties", "**/application-*.yml", "**/application-*.yaml", "**/logback-spring.xml", "**/log4j2-spring.xml", "**/checkstyle.xml", "**/spotbugs*.xml"]
+  startup_patterns: ["**/*Application.java", "**/*Application.kt", "**/*Configuration.java", "**/*Configuration.kt", "**/*SecurityConfig.java", "**/*SecurityConfig.kt"]
+  test_patterns: ["**/src/test/**/*.java", "**/src/test/**/*.kt", "**/*Test.java", "**/*Tests.java", "**/*Test.kt", "**/*Tests.kt"]
+audits:
+  - id: maven-test
+    title: Execute Maven verification with the project wrapper
+    command: ./mvnw -B verify
+    when_any_files: [mvnw]
+    evidence_kind: tests_executed
+    required: false
+  - id: gradle-test
+    title: Execute Gradle tests with the project wrapper
+    command: ./gradlew test
+    when_any_files: [gradlew]
+    evidence_kind: tests_executed
+    required: false
+rules:
+  - id: SPRING-DI-001
+    title: Explicit dependency injection
+    categories: [architecture, maintainability]
+    default_technical_quality_impact: material
+    guidance: Prefer constructor injection for required dependencies. Report field injection or ApplicationContext/service-locator access when it hides required collaborators, prevents invariant construction, or materially harms tests; framework integration code is not automatically a defect.
+    evidence_required: [component declaration, injection or lookup site, affected test or boundary]
+  - id: SPRING-DI-002
+    title: Bean lifecycle and dependency cycles
+    categories: [architecture, correctness]
+    default_technical_quality_impact: systemic
+    guidance: Verify singleton/request/session scope compatibility, mutable shared state, lazy cycle workarounds, and circular dependencies using the actual bean graph and runtime boundary.
+    evidence_required: [bean declarations, dependency chain, execution scope]
+  - id: SPRING-ARCH-001
+    title: Web, application, and persistence responsibilities
+    categories: [architecture, maintainability]
+    default_technical_quality_impact: material
+    guidance: Assess whether controllers mix transport with substantial business or persistence behavior and whether services/repositories have coherent ownership. Do not require interfaces, repositories, DTO mappers, or a fixed layer count without contextual need.
+    evidence_required: [controller, service or repository code, repeated responsibility evidence]
+  - id: SPRING-SOLID-001
+    title: Component cohesion, contracts, and dependency direction
+    categories: [architecture, maintainability]
+    default_technical_quality_impact: material
+    guidance: Check important components for unrelated reasons to change, overly broad interfaces, implementations that violate caller-visible contracts, and domain/application policy directly coupled to replaceable infrastructure. Require a concrete change/test/correctness cost; do not demand interfaces or ports without contextual value.
+    evidence_required: [component or interface contract, callers and implementations, demonstrated responsibility or dependency-direction consequence]
+  - id: SPRING-TX-001
+    title: Transaction boundary correctness
+    categories: [correctness, architecture]
+    default_technical_quality_impact: systemic
+    guidance: Verify transactional proxy reachability, self-invocation, propagation, rollback expectations, read-only assumptions, and transaction scope around remote calls or long-running work.
+    evidence_required: [transaction annotation or configuration, call path, persistence operations]
+  - id: SPRING-JPA-001
+    title: JPA query and persistence-context behavior
+    categories: [correctness, operations, maintainability]
+    default_technical_quality_impact: material
+    guidance: Look for demonstrated N+1 access, unbounded fetches, accidental eager graphs, lazy access outside a transaction, entity leakage, or query-per-item patterns. Infer runtime cost conservatively.
+    evidence_required: [entity mapping or query, iteration or serialization path]
+  - id: SPRING-API-001
+    title: Input validation and error contracts
+    categories: [correctness, security, maintainability]
+    default_technical_quality_impact: material
+    guidance: Verify request validation is activated, constraint failures and domain errors map consistently, sensitive details are not exposed, and API status/body contracts match caller expectations.
+    evidence_required: [request model and endpoint, exception handler or response mapping]
+  - id: SPRING-SEC-001
+    title: Spring Security boundaries
+    categories: [security, correctness]
+    default_technical_quality_impact: systemic
+    guidance: Review SecurityFilterChain matching, method security, CSRF/CORS/session choices, authentication entry points, and actuator/static exclusions against the actual client and deployment trust model.
+    evidence_required: [security configuration, protected and public endpoints, deployment assumptions]
+  - id: SPRING-CONFIG-001
+    title: Typed configuration and validation
+    categories: [correctness, deployability]
+    default_technical_quality_impact: material
+    guidance: Verify required settings are coherently bound and validated before serving traffic. Direct @Value usage is not automatically a defect; focus on scattered contracts, missing validation, secrets, and profile drift.
+    evidence_required: [configuration properties or value injection, environment configuration, dependent behavior]
+  - id: SPRING-OPS-001
+    title: Actuator, health, and management exposure
+    categories: [operations, security, deployability]
+    default_technical_quality_impact: material
+    guidance: Verify liveness/readiness semantics, management endpoint exposure, sensitive actuator data, graceful shutdown, and external dependency health behavior for the target platform.
+    evidence_required: [actuator dependency and configuration, security rules, deployment probes]
+  - id: SPRING-ASYNC-001
+    title: Async executor and context ownership
+    categories: [correctness, operations]
+    default_technical_quality_impact: material
+    guidance: Check @Async proxy reachability, executor sizing and queues, exception handling, transaction/security context assumptions, cancellation, and lifecycle ownership with concrete call paths.
+    evidence_required: [async annotation or executor configuration, caller and work body]
+  - id: SPRING-QUALITY-001
+    title: Compiler, static analysis, and warning policy
+    categories: [maintainability, correctness]
+    default_technical_quality_impact: localized
+    guidance: Assess compiler warnings, nullness, Checkstyle, SpotBugs, Error Prone, PMD, or equivalent enforcement. Score missing safeguards only when evidence shows recurring defects or widespread ambiguity.
+    evidence_required: [build plugin configuration, representative source evidence]
+scoring:
+  category_caps:
+    - id: spring-systemic-architecture
+      category: architecture
+      max_score: 7.0
+      trigger_rule_ids: [SPRING-DI-001, SPRING-DI-002, SPRING-ARCH-001, SPRING-SOLID-001, SPRING-TX-001]
+      minimum_findings: 1
+      minimum_technical_quality_impact: systemic
+    - id: spring-repeated-design-debt
+      category: architecture
+      max_score: 8.0
+      trigger_rule_ids: [SPRING-DI-001, SPRING-DI-002, SPRING-ARCH-001, SPRING-SOLID-001, SPRING-TX-001]
+      minimum_findings: 3
+      minimum_technical_quality_impact: material

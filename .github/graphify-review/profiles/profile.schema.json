@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/graphify-review/profile.schema.json",
+  "title": "Graphify framework review profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "id", "aliases", "display_name", "description", "project_type", "detection", "evidence", "audits", "rules", "scoring"],
+  "properties": {
+    "version": {"const": 1},
+    "id": {"type": "string", "minLength": 1},
+    "aliases": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "display_name": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "project_type": {"enum": ["generic", "web", "api", "service", "cli", "library", "desktop", "mobile", "data_pipeline"]},
+    "detection": {
+      "type": "object", "additionalProperties": false, "required": ["file_patterns", "content_markers"],
+      "properties": {
+        "file_patterns": {"$ref": "#/$defs/strings"},
+        "content_markers": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["file_patterns", "contains_any"], "properties": {"file_patterns": {"$ref": "#/$defs/nonempty_strings"}, "contains_any": {"$ref": "#/$defs/nonempty_strings"}}}}
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false, "required": ["manifest_patterns", "configuration_patterns", "startup_patterns", "test_patterns"],
+      "properties": {"manifest_patterns": {"$ref": "#/$defs/strings"}, "configuration_patterns": {"$ref": "#/$defs/strings"}, "startup_patterns": {"$ref": "#/$defs/strings"}, "test_patterns": {"$ref": "#/$defs/strings"}}
+    },
+    "audits": {"type": "array", "items": {"$ref": "#/$defs/audit"}},
+    "rules": {"type": "array", "items": {"$ref": "#/$defs/rule"}},
+    "scoring": {"type": "object", "additionalProperties": false, "required": ["category_caps"], "properties": {"category_caps": {"type": "array", "items": {"$ref": "#/$defs/cap"}}}}
+  },
+  "$defs": {
+    "strings": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "nonempty_strings": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "category": {"enum": ["architecture", "correctness", "maintainability", "security", "deployability", "testing", "operations"]},
+    "quality_impact": {"enum": ["systemic", "material", "localized", "none"]},
+    "audit": {"type": "object", "additionalProperties": false, "required": ["id", "title", "command", "when_any_files", "evidence_kind", "required"], "properties": {"id": {"type": "string", "minLength": 1}, "title": {"type": "string", "minLength": 1}, "command": {"type": "string", "minLength": 1}, "when_any_files": {"$ref": "#/$defs/nonempty_strings"}, "evidence_kind": {"enum": ["source_analysis", "tests_executed", "dependency_vulnerability_scan", "secret_scan", "static_security_scan", "configuration_analysis", "graph_analysis", "dependencies", "coverage"]}, "required": {"type": "boolean"}}},
+    "rule": {"type": "object", "additionalProperties": false, "required": ["id", "title", "categories", "default_technical_quality_impact", "guidance", "evidence_required"], "properties": {"id": {"type": "string", "minLength": 1}, "title": {"type": "string", "minLength": 1}, "categories": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/category"}}, "default_technical_quality_impact": {"$ref": "#/$defs/quality_impact"}, "guidance": {"type": "string", "minLength": 1}, "evidence_required": {"$ref": "#/$defs/nonempty_strings"}}},
+    "cap": {"type": "object", "additionalProperties": false, "required": ["id", "category", "max_score", "trigger_rule_ids", "minimum_findings", "minimum_technical_quality_impact"], "properties": {"id": {"type": "string", "minLength": 1}, "category": {"$ref": "#/$defs/category"}, "max_score": {"type": "number", "minimum": 0, "maximum": 10}, "trigger_rule_ids": {"$ref": "#/$defs/nonempty_strings"}, "minimum_findings": {"type": "integer", "minimum": 1}, "minimum_technical_quality_impact": {"$ref": "#/$defs/quality_impact"}}}
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/graphify-review/evidence.schema.json",
+  "title": "Normalized review evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "repository", "profile", "graph", "source", "tests", "coverage", "security", "dependencies", "configuration", "tools", "limitations"],
+  "properties": {
+    "schema_version": {"const": "2.1"},
+    "repository": {"type": "object"},
+    "profile": {"$ref": "#/$defs/profile"},
+    "graph": {"$ref": "#/$defs/evidence_section"}, "source": {"$ref": "#/$defs/evidence_section"},
+    "tests": {"$ref": "#/$defs/evidence_section"}, "coverage": {"$ref": "#/$defs/evidence_section"},
+    "security": {"type": "object", "additionalProperties": false, "required": ["dependency_vulnerability_scan", "secret_scan", "static_security_scan"], "properties": {"dependency_vulnerability_scan": {"$ref": "#/$defs/evidence_section"}, "secret_scan": {"$ref": "#/$defs/evidence_section"}, "static_security_scan": {"$ref": "#/$defs/evidence_section"}}},
+    "dependencies": {"$ref": "#/$defs/evidence_section"}, "configuration": {"$ref": "#/$defs/evidence_section"},
+    "tools": {"type": "array", "items": {"$ref": "#/$defs/tool"}}, "limitations": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+  },
+  "$defs": {
+    "state": {"enum": ["not_run", "passed", "failed", "unavailable", "not_applicable"]},
+    "profile": {"type": "object", "additionalProperties": false, "required": ["id", "version", "display_name", "hash", "detection_state", "requested", "detection", "manifest_files", "configuration_files", "startup_files", "test_files", "applicable_audits"], "properties": {"id": {"type": "string", "minLength": 1}, "version": {"type": "integer", "minimum": 1}, "display_name": {"type": "string", "minLength": 1}, "hash": {"type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$"}, "detection_state": {"enum": ["matched", "not_detected", "not_applicable"]}, "requested": {"type": "string"}, "detection": {"type": "object"}, "manifest_files": {"type": "array", "items": {"type": "string"}}, "configuration_files": {"type": "array", "items": {"type": "string"}}, "startup_files": {"type": "array", "items": {"type": "string"}}, "test_files": {"type": "array", "items": {"type": "string"}}, "applicable_audits": {"type": "array", "items": {"type": "object"}}}},
+    "completion": {"enum": ["complete", "partial", "not_completed", "not_applicable"]},
+    "evidence_section": {"type": "object", "additionalProperties": true, "required": ["state", "completion"], "properties": {"state": {"$ref": "#/$defs/state"}, "completion": {"$ref": "#/$defs/completion"}, "summary": {"type": "string"}, "items": {"type": "array"}}},
+    "tool": {"type": "object", "additionalProperties": true, "required": ["name", "state", "completion"], "properties": {"name": {"type": "string"}, "version": {"type": ["string", "null"]}, "command": {"type": ["string", "null"]}, "state": {"$ref": "#/$defs/state"}, "completion": {"$ref": "#/$defs/completion"}}}
+  }
+}

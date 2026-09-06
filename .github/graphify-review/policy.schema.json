@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/graphify-review/policy.schema.json",
+  "title": "Graphify review policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "runtime", "reproducibility", "project", "deployment", "security", "testing", "scoring", "confidence", "review", "verification", "models", "accepted_risks"],
+  "properties": {
+    "version": {"const": 1},
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["auto_bootstrap", "venv_path", "requirements_file", "minimum_python"],
+      "properties": {
+        "auto_bootstrap": {"type": "boolean"},
+        "venv_path": {"type": "string", "minLength": 1},
+        "requirements_file": {"type": "string", "minLength": 1},
+        "minimum_python": {"type": "string", "pattern": "^\\d+\\.\\d+$"}
+      }
+    },
+    "reproducibility": {
+      "type": "object", "additionalProperties": false,
+      "required": ["require_clean_worktree", "output_root", "versioned_outputs", "require_baseline_disposition"],
+      "properties": {
+        "require_clean_worktree": {"type": "boolean"},
+        "output_root": {"type": "string", "minLength": 1},
+        "versioned_outputs": {"const": true},
+        "require_baseline_disposition": {"const": true}
+      }
+    },
+    "project": {"type": "object", "additionalProperties": false, "required": ["type"], "properties": {"type": {"enum": ["generic", "web", "api", "service", "cli", "library", "desktop", "mobile", "data_pipeline"]}}},
+    "deployment": {"type": "object", "additionalProperties": false, "required": ["type", "containers_required"], "properties": {"type": {"enum": ["conventional_server", "container", "serverless", "desktop", "mobile", "library"]}, "containers_required": {"type": "boolean"}}},
+    "security": {"type": "object", "additionalProperties": false, "required": ["require_sca", "require_sast", "require_secret_scan"], "properties": {"require_sca": {"type": "boolean"}, "require_sast": {"type": "boolean"}, "require_secret_scan": {"type": "boolean"}}},
+    "testing": {"type": "object", "additionalProperties": false, "required": ["minimum_coverage_percent"], "properties": {"minimum_coverage_percent": {"type": "number", "minimum": 0, "maximum": 100}}},
+    "scoring": {
+      "type": "object", "additionalProperties": false, "required": ["category_weights", "penalties", "overall_aggregation", "hard_gates"],
+      "properties": {
+        "category_weights": {"$ref": "#/$defs/categories"},
+        "penalties": {"type": "object", "additionalProperties": false, "required": ["critical", "high", "medium", "low", "informational"], "properties": {"critical": {"$ref": "#/$defs/penalty"}, "high": {"$ref": "#/$defs/penalty"}, "medium": {"$ref": "#/$defs/penalty"}, "low": {"$ref": "#/$defs/penalty"}, "informational": {"$ref": "#/$defs/penalty"}}},
+        "overall_aggregation": {"type": "object", "additionalProperties": false, "required": ["weighted_average_weight", "weakest_category_weight"], "properties": {"weighted_average_weight": {"type": "number", "minimum": 0, "maximum": 1}, "weakest_category_weight": {"type": "number", "minimum": 0, "maximum": 1}}},
+        "hard_gates": {"type": "object", "additionalProperties": {"type": "object", "additionalProperties": false, "required": ["max_score", "release_recommendation"], "properties": {"max_score": {"type": "number", "minimum": 0, "maximum": 10}, "release_recommendation": {"enum": ["GO", "GO_WITH_ACTIONS", "CONDITIONAL", "NO_GO", "INSUFFICIENT_EVIDENCE"]}}}}
+      }
+    },
+    "confidence": {
+      "type": "object", "additionalProperties": false, "required": ["minimum_for_decision_percent", "levels", "evidence_weights", "decision_requirements"],
+      "properties": {
+        "minimum_for_decision_percent": {"type": "integer", "minimum": 0, "maximum": 100},
+        "levels": {"type": "object", "additionalProperties": false, "required": ["high", "medium"], "properties": {"high": {"type": "integer", "minimum": 0, "maximum": 100}, "medium": {"type": "integer", "minimum": 0, "maximum": 100}}},
+        "evidence_weights": {"type": "object", "additionalProperties": false, "required": ["source_analysis", "graph_analysis", "tests_executed", "dependency_vulnerability_scan", "secret_scan", "static_security_scan", "configuration_analysis"], "properties": {"source_analysis": {"$ref": "#/$defs/weight"}, "graph_analysis": {"$ref": "#/$defs/weight"}, "tests_executed": {"$ref": "#/$defs/weight"}, "dependency_vulnerability_scan": {"$ref": "#/$defs/weight"}, "secret_scan": {"$ref": "#/$defs/weight"}, "static_security_scan": {"$ref": "#/$defs/weight"}, "configuration_analysis": {"$ref": "#/$defs/weight"}}},
+        "decision_requirements": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["source_analysis", "graph_analysis", "tests_executed", "dependency_vulnerability_scan", "secret_scan", "static_security_scan", "configuration_analysis"]}}
+      }
+    },
+    "review": {"type": "object", "additionalProperties": false, "required": ["random_sampling_percent", "random_sampling_min_files", "random_sampling_max_files"], "properties": {"random_sampling_percent": {"type": "number", "minimum": 0, "maximum": 100}, "random_sampling_min_files": {"type": "integer", "minimum": 0}, "random_sampling_max_files": {"type": "integer", "minimum": 0}}},
+    "verification": {"type": "object", "additionalProperties": false, "required": ["informational", "low", "medium", "high", "critical", "production_blocker"], "properties": {"allow_partially_supported_for_scoring": {"type": "boolean"}, "informational": {"$ref": "#/$defs/verification_rule"}, "low": {"$ref": "#/$defs/verification_rule"}, "medium": {"$ref": "#/$defs/verification_rule"}, "high": {"$ref": "#/$defs/verification_rule"}, "critical": {"$ref": "#/$defs/verification_rule"}, "production_blocker": {"type": "object", "additionalProperties": false, "required": ["independent_verifier_required"], "properties": {"independent_verifier_required": {"type": "boolean"}}}}},
+    "models": {"type": "object", "additionalProperties": false, "required": ["exact_model_required", "routing", "agent_defaults"], "properties": {"exact_model_required": {"type": "boolean"}, "routing": {"type": "object", "additionalProperties": false, "required": ["trivial", "normal", "complex", "critical"], "properties": {"trivial": {"$ref": "#/$defs/model_route"}, "normal": {"$ref": "#/$defs/model_route"}, "complex": {"$ref": "#/$defs/model_route"}, "critical": {"$ref": "#/$defs/model_route"}}}, "agent_defaults": {"type": "object", "additionalProperties": {"enum": ["trivial", "normal", "complex", "critical"]}}}},
+    "validation": {"type": "object", "additionalProperties": false, "properties": {"local_source_required": {"type": "boolean"}}},
+    "accepted_risks": {"type": "array", "items": {"$ref": "#/$defs/accepted_risk"}}
+  },
+  "$defs": {
+    "weight": {"type": "number", "minimum": 0, "maximum": 100},
+    "categories": {"type": "object", "additionalProperties": false, "required": ["architecture", "correctness", "maintainability", "security", "deployability", "testing", "operations"], "properties": {"architecture": {"type": "number", "minimum": 0, "maximum": 1}, "correctness": {"type": "number", "minimum": 0, "maximum": 1}, "maintainability": {"type": "number", "minimum": 0, "maximum": 1}, "security": {"type": "number", "minimum": 0, "maximum": 1}, "deployability": {"type": "number", "minimum": 0, "maximum": 1}, "testing": {"type": "number", "minimum": 0, "maximum": 1}, "operations": {"type": "number", "minimum": 0, "maximum": 1}}},
+    "penalty": {"type": "object", "additionalProperties": false, "required": ["systemic", "material", "localized", "none"], "properties": {"systemic": {"type": "number", "minimum": 0}, "material": {"type": "number", "minimum": 0}, "localized": {"type": "number", "minimum": 0}, "none": {"type": "number", "minimum": 0}}},
+    "verification_rule": {"type": "object", "additionalProperties": false, "required": ["reviewers_required", "independent_verifier_required"], "properties": {"reviewers_required": {"type": "integer", "minimum": 1}, "independent_verifier_required": {"type": "boolean"}, "deterministic_evidence_required": {"type": "boolean"}}},
+    "model_route": {"type": "object", "additionalProperties": false, "required": ["preferred"], "properties": {"preferred": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}},
+    "accepted_risk": {"type": "object", "additionalProperties": false, "required": ["finding_id", "status", "owner", "rationale", "accepted_until", "production_impact_override"], "properties": {"finding_id": {"type": "string", "minLength": 1}, "status": {"const": "accepted"}, "owner": {"type": "string", "minLength": 1}, "rationale": {"type": "string", "minLength": 1}, "accepted_until": {"type": "string", "format": "date"}, "production_impact_override": {"enum": ["blocker", "required_before_production", "post_release", "none"]}}}
+  }
+}

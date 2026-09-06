@@ -1,0 +1,151 @@
+version: 1
+
+runtime:
+  auto_bootstrap: true
+  venv_path: .graphify-review-venv
+  requirements_file: .github/graphify-review/requirements.txt
+  minimum_python: "3.10"
+
+reproducibility:
+  require_clean_worktree: true
+  output_root: .github/graphify-review/output/runs
+  versioned_outputs: true
+  require_baseline_disposition: true
+
+project:
+  type: generic
+
+deployment:
+  type: conventional_server
+  containers_required: false
+
+security:
+  require_sca: true
+  require_sast: true
+  require_secret_scan: true
+
+testing:
+  minimum_coverage_percent: 70
+
+scoring:
+  category_weights:
+    architecture: 0.15
+    correctness: 0.20
+    maintainability: 0.10
+    security: 0.20
+    deployability: 0.15
+    testing: 0.10
+    operations: 0.10
+  penalties:
+    critical:
+      systemic: 7.0
+      material: 6.0
+      localized: 4.0
+      none: 0.0
+    high:
+      systemic: 5.0
+      material: 4.0
+      localized: 2.5
+      none: 0.0
+    medium:
+      systemic: 3.5
+      material: 2.25
+      localized: 1.25
+      none: 0.0
+    low:
+      systemic: 1.5
+      material: 1.0
+      localized: 0.5
+      none: 0.0
+    informational:
+      systemic: 0.0
+      material: 0.0
+      localized: 0.0
+      none: 0.0
+  overall_aggregation:
+    weighted_average_weight: 0.70
+    weakest_category_weight: 0.30
+  hard_gates:
+    critical_blocker:
+      max_score: 4.0
+      release_recommendation: NO_GO
+    exposed_secret:
+      max_score: 3.0
+      release_recommendation: NO_GO
+
+confidence:
+  minimum_for_decision_percent: 60
+  levels:
+    high: 85
+    medium: 60
+  evidence_weights:
+    source_analysis: 20
+    graph_analysis: 15
+    tests_executed: 20
+    dependency_vulnerability_scan: 15
+    secret_scan: 10
+    static_security_scan: 10
+    configuration_analysis: 10
+  decision_requirements:
+    - tests_executed
+    - dependency_vulnerability_scan
+    - secret_scan
+    - static_security_scan
+
+review:
+  random_sampling_percent: 5
+  random_sampling_min_files: 3
+  random_sampling_max_files: 20
+
+verification:
+  allow_partially_supported_for_scoring: true
+  informational:
+    reviewers_required: 1
+    independent_verifier_required: false
+  low:
+    reviewers_required: 1
+    independent_verifier_required: false
+  medium:
+    reviewers_required: 1
+    independent_verifier_required: true
+  high:
+    reviewers_required: 2
+    independent_verifier_required: true
+  critical:
+    reviewers_required: 2
+    independent_verifier_required: true
+    deterministic_evidence_required: true
+  production_blocker:
+    independent_verifier_required: true
+
+models:
+  exact_model_required: true
+  routing:
+    trivial:
+      preferred:
+        - GPT-5.6 Luna
+    normal:
+      preferred:
+        - GPT-5.6 Luna
+    complex:
+      preferred:
+        - GPT-5.6 Terra
+    critical:
+      preferred:
+        - GPT-5.6 Sol
+  agent_defaults:
+    evidence-scoper: normal
+    maintainability-reviewer: normal
+    security-reviewer: normal
+    testing-reviewer: normal
+    deployability-reviewer: normal
+    architecture-reviewer: complex
+    correctness-reviewer: complex
+    finding-verifier: complex
+    production-readiness-reviewer: complex
+    review-synthesizer: critical
+
+validation:
+  local_source_required: false
+
+accepted_risks: []

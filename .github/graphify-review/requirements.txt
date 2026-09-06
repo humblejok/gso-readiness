@@ -1,0 +1,3 @@
+# Runtime dependency for the Graphify evidence source.
+# Pinned so identical review-kit inputs use the same graph extractor.
+graphifyy==0.9.46

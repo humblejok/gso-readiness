@@ -1,0 +1,38 @@
+{
+  "schema_version": "2.1",
+  "repository": {"root": ".", "commit_sha": "0123456789abcdef", "branch": "main", "dirty_worktree": false, "source_snapshot_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "source_file_count": 2},
+  "profile": {
+    "id": "generic",
+    "version": 1,
+    "display_name": "Generic software project",
+    "hash": "sha256:a129b007b2692db23d250e218e1c53a95270f2e360f84783527f37ee2af0af70",
+    "detection_state": "not_applicable",
+    "requested": "generic",
+    "detection": {"state": "not_applicable", "matched_files": [], "matched_markers": []},
+    "manifest_files": [],
+    "configuration_files": [],
+    "startup_files": [],
+    "test_files": [],
+    "applicable_audits": []
+  },
+  "graph": {"state": "passed", "completion": "complete", "summary": "Normalized Graphify evidence loaded.", "items": [{"source": "graphify.example.json"}], "node_count": 3, "edge_count": 3, "cycles": []},
+  "source": {"state": "passed", "completion": "complete", "summary": "Source inventory and targeted inspection completed.", "items": ["src/orders.py", "src/pricing.py"]},
+  "tests": {"state": "passed", "completion": "complete", "summary": "Repository test command completed.", "items": [{"command": "project test command", "passed": 42, "failed": 0}]},
+  "coverage": {"state": "not_run", "completion": "not_completed", "summary": "No numerical coverage report was available.", "items": []},
+  "security": {
+    "dependency_vulnerability_scan": {"state": "not_run", "completion": "not_completed", "summary": "Dependency vulnerability status is unknown.", "items": []},
+    "secret_scan": {"state": "not_run", "completion": "not_completed", "summary": "No dedicated secret scan result was supplied.", "items": []},
+    "static_security_scan": {"state": "not_run", "completion": "not_completed", "summary": "No SAST result was supplied.", "items": []}
+  },
+  "dependencies": {"state": "passed", "completion": "complete", "summary": "Dependency manifests inventoried.", "items": ["requirements.txt"]},
+  "configuration": {"state": "passed", "completion": "complete", "summary": "Production configuration inspected.", "items": ["src/project/settings.py"]},
+  "tools": [
+    {"name": "graphify", "version": "0.9.46", "command": null, "state": "passed", "completion": "complete"},
+    {"name": "project tests", "version": null, "command": "project test command", "state": "passed", "completion": "complete", "output_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+  ],
+  "limitations": [
+    "Dependency vulnerability scan was not run.",
+    "Secret scan was not run.",
+    "Static security scan was not run."
+  ]
+}

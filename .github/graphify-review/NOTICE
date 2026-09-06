@@ -1,0 +1,29 @@
+Graphify VS Code Production Review Kit
+
+Original concept and project creator: De Jonckheere Stéphane (humblejok).
+Copyright (C) 2026 De Jonckheere Stéphane (humblejok).
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The original material in this project is licensed under the GNU Affero General
+Public License, version 3 only. See LICENSE for the complete license text.
+You may redistribute and modify it under those terms. It is provided without
+any warranty, including implied warranties of merchantability or fitness for
+a particular purpose.
+
+Retain applicable copyright, license, and attribution notices when distributing
+copies or modified versions, and identify modifications as required by the
+license. This notice records the origin of this review kit; it does not assert
+ownership of Graphify, GitHub Copilot, JFrog, or their underlying ideas.
+
+The license covers the original scripts, prompts, agent and skill instructions,
+policies, schemas, viewer, examples, installer, and documentation supplied as
+part of this kit. When installed into another repository, it applies to these
+kit files, not unrelated pre-existing files under the same .github directory.
+Merely using the kit to review an application does not license that application
+under the AGPL. Output is covered only to the extent its contents constitute a
+covered work under section 2 of the license.
+
+Third-party material remains under its respective terms. See
+THIRD_PARTY_NOTICES.md. This NOTICE explains attribution and scope; it adds no
+advertising requirement or other restriction to the AGPL.

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/graphify-review/finding.schema.json",
+  "title": "Verified review finding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "fingerprint", "identity", "category", "type", "title", "severity", "technical_quality_impact", "production_impact", "likelihood", "remediation_priority", "verification_status", "verification", "confidence", "description", "impact", "recommendation", "evidence", "standards", "risk_acceptance"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1}, "candidate_id": {"type": "string", "minLength": 1},
+    "fingerprint": {"type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$"},
+    "identity": {"$ref": "#/$defs/identity"},
+    "category": {"enum": ["architecture", "correctness", "maintainability", "security", "deployability", "testing", "operations"]},
+    "type": {"const": "finding"}, "title": {"type": "string", "minLength": 1},
+    "severity": {"enum": ["critical", "high", "medium", "low", "informational"]},
+    "technical_quality_impact": {"enum": ["systemic", "material", "localized", "none"]},
+    "production_impact": {"enum": ["blocker", "required_before_production", "post_release", "none"]},
+    "profile_rule_id": {"type": "string", "minLength": 1},
+    "likelihood": {"enum": ["high", "medium", "low", "unknown", "not_applicable"]},
+    "remediation_priority": {"enum": ["P0", "P1", "P2", "P3", "P4"]},
+    "verification_status": {"enum": ["supported", "partially_supported", "unsupported", "inconclusive"]},
+    "verification": {"type": "object", "additionalProperties": false, "required": ["reviewers", "independent_verifier"], "properties": {"reviewers": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}, "independent_verifier": {"type": "boolean"}, "summary": {"type": "string"}}},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1}, "description": {"type": "string"}, "impact": {"type": "string"}, "recommendation": {"type": "string"},
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}, "standards": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/standard"}},
+    "risk_acceptance": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/risk_acceptance"}]},
+    "hard_gate_tags": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"verification_status": {"enum": ["supported", "partially_supported"]}, "severity": {"enum": ["critical", "high", "medium", "low"]}}, "required": ["verification_status", "severity"]},
+      "then": {"properties": {"technical_quality_impact": {"enum": ["systemic", "material", "localized"]}}}
+    },
+    {
+      "if": {"properties": {"verification_status": {"enum": ["unsupported", "inconclusive"]}}, "required": ["verification_status"]},
+      "then": {"properties": {"technical_quality_impact": {"const": "none"}, "production_impact": {"const": "none"}}}
+    }
+  ],
+  "$defs": {
+    "identity": {"type": "object", "additionalProperties": false, "required": ["defect_key", "primary_location", "symbol", "profile_rule_id", "anchor_id"], "properties": {"defect_key": {"type": "string", "minLength": 1}, "primary_location": {"type": "string", "minLength": 1}, "symbol": {"type": "string"}, "profile_rule_id": {"type": "string"}, "anchor_id": {"type": "string"}}},
+    "evidence": {"type": "object", "additionalProperties": true, "required": ["type"], "properties": {"type": {"enum": ["graphify", "source", "tool", "test", "configuration", "documentation", "dependency_vulnerability"]}, "source_id": {"type": "string"}, "path": {"type": "string"}, "start_line": {"type": "integer", "minimum": 1}, "end_line": {"type": "integer", "minimum": 1}, "content_hash": {"type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$"}, "nodes": {"type": "array", "items": {"type": "string"}}, "tool": {"type": "string"}, "tool_version": {"type": "string"}, "rule_id": {"type": "string"}, "package": {"type": "string"}, "installed_version": {"type": "string"}, "advisory_id": {"type": "string", "pattern": "^(CVE-\\d{4}-\\d{4,}|GHSA-[0-9a-z-]+)$"}, "fact": {"type": "string"}}},
+    "standard": {"type": "object", "additionalProperties": false, "required": ["framework", "id", "title"], "properties": {"framework": {"enum": ["CWE", "OWASP Top 10", "OWASP ASVS", "NIST SSDF"]}, "id": {"type": "string", "minLength": 1}, "title": {"type": "string", "minLength": 1}}},
+    "risk_acceptance": {"type": "object", "additionalProperties": false, "required": ["status", "owner", "accepted_until", "rationale", "expired"], "properties": {"status": {"const": "accepted"}, "owner": {"type": "string"}, "accepted_until": {"type": "string", "format": "date"}, "rationale": {"type": "string"}, "expired": {"type": "boolean"}, "production_impact_override": {"enum": ["blocker", "required_before_production", "post_release", "none"]}}}
+  }
+}
