@@ -115,7 +115,13 @@ def _import(data, plans, actor):
             for field in ("title", "severity", "category", "verification_status"):
                 setattr(finding, field, item[field])
             finding.data, finding.last_seen = item, timezone.now()
+            finding.implementation_revision += 1
+            if finding.lifecycle != "open":
+                finding.implementation_requested = False
             finding.save()
+            from .finding_work import invalidate_claims
+
+            invalidate_claims(finding, "A new full review superseded the implementation baseline.")
             result["created_findings" if created else "updated_findings"] += 1
             result["lifecycle_changes"] += int(not created and before != finding.lifecycle)
             observations[finding.fingerprint] = Observation.objects.create(
@@ -135,7 +141,22 @@ def _import(data, plans, actor):
             "open" if disposition["status"] == "still_present" else disposition["status"]
         )
         finding.replacement_fingerprint = disposition.get("replacement_fingerprint", "")
-        finding.save(update_fields=["lifecycle", "replacement_fingerprint"])
+        finding.implementation_revision += 1
+        if finding.lifecycle != "open":
+            finding.implementation_requested = False
+        finding.save(
+            update_fields=[
+                "lifecycle",
+                "replacement_fingerprint",
+                "implementation_revision",
+                "implementation_requested",
+            ]
+        )
+        from .finding_work import invalidate_claims
+
+        invalidate_claims(
+            finding, "A new full revalidation superseded the implementation baseline."
+        )
         result["lifecycle_changes"] += int(before != finding.lifecycle)
         observations[fp] = Observation.objects.create(
             finding=finding,

@@ -30,6 +30,24 @@ Open `http://127.0.0.1:8000/accounts/signup/`. Register an email and a strong pa
 
 The dedicated `.finding-hub-venv` does not touch `.venv` or `.graphify-review-venv`. Settings read environment variables; `.env` is **not loaded automatically** by Django. Use shell exports, your process manager, or Docker Compose's `env_file`. Do not commit secrets or the development database.
 
+## Upgrade for finding implementation
+
+After deploying the updated code, back up your database, then run migrations using your Hub environment (not the review kit environment):
+
+```bash
+.finding-hub-venv/bin/python hub/manage.py migrate
+```
+
+On Windows use `.\.finding-hub-venv\Scripts\python.exe hub\manage.py migrate`. Migration `0006` adds the queue flag, editable remediation and work-history table, with PostgreSQL tenant policies/reference guards. Restart the web/worker processes; production deployments must also rebuild/redeploy static assets or run `collectstatic --noinput` using their existing configuration.
+
+Owners/admins/reviewers can queue or cancel open findings. Queued findings expose a remediation editor on their detail page; edits preserve the imported plan and invalidate an active worker. Viewers cannot change these controls. The list hides rejected/inconclusive findings by default and offers a show-all checkbox and queue-only filter.
+
+For Copilot implementation, issue a token with **both** `findings:read` and `findings:implement`, preferably restricted to the project's stable repository ID. Existing tokens do not gain the new scope: issue a replacement, save it through the kit's terminal login, and revoke the old token according to your rotation procedure. Standalone targeted result uploads additionally need `reviews:write`. The Hub never receives GitHub credentials and never runs repository code; Git/`gh` and verification run on the user's machine.
+
+Success records **resolved on the feature branch, PR not yet merged**, removes the flag and appends a factual comment. Failure keeps it open/queued. Single-item results leave imported whole-project scores and other findings untouched. Targeted updates do not enqueue Jira delivery. Workspace exports include additive `finding_work` and `finding_activities` arrays so edited drafts and targeted history are retained; these arrays are archival data, not full-review import envelopes or a supported restore API.
+
+See [commands, safety constraints, retries and API](../docs/finding_implementation_workflow.md). PostgreSQL isolation/concurrency tests must pass with a non-superuser runtime role before production rollout; SQLite tests alone are insufficient.
+
 ## Upload a review
 
 In the reviewed project's Copilot chat, first export a previous full-project run:

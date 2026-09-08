@@ -13,6 +13,7 @@ from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.mail import send_mail
 from django.core.paginator import Paginator
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.http import Http404, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404 as django_object_or_404
 from django.shortcuts import redirect, render
@@ -21,12 +22,14 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
 from . import forms
-from .contracts import canonical, render_remediation
+from .contracts import canonical
+from .finding_work import WorkConflict, configure, remediation_text
 from .imports import ImportConflict, import_review
 from .models import (
     ApiClient,
     AuditEvent,
     Finding,
+    FindingActivity,
     Invitation,
     JiraBinding,
     JiraConnection,
@@ -199,16 +202,31 @@ def new_workspace(request):
 
 def dashboard(request, organization_id):
     query = Finding.objects.select_related("repository")
+    show_all = request.GET.get("show_all") == "1" or request.GET.get("lifecycle") in {
+        "inconclusive",
+        "rejected",
+    }
+    if not show_all:
+        query = query.exclude(
+            Q(lifecycle__in=["inconclusive", "rejected"])
+            | Q(verification_status__in=["inconclusive", "rejected"])
+        )
     for key in ("severity", "lifecycle", "category"):
         if request.GET.get(key):
             query = query.filter(**{key: request.GET[key]})
     if request.GET.get("q"):
-        query = query.filter(title__icontains=request.GET["q"][:200])
+        query = query.filter(
+            Q(title__icontains=request.GET["q"][:200])
+            | Q(display_id__icontains=request.GET["q"][:200])
+        )
+    if request.GET.get("to_implement") == "1":
+        query = query.filter(implementation_requested=True, lifecycle="open")
     rows = Paginator(query.order_by("-last_seen", "pk"), 50).get_page(request.GET.get("page"))
     return page(
         request,
         "dashboard.html",
         findings=rows,
+        show_all=show_all,
         repositories=Repository.objects.order_by("name"),
         total=Finding.objects.count(),
         open_count=Finding.objects.filter(lifecycle="open").count(),
@@ -228,15 +246,60 @@ def finding_detail(request, organization_id, pk):
         .order_by("-created_at", "pk")
     )
     latest = observations.first()
+    remediation = remediation_text(finding, latest)
+    form = forms.ImplementationForm(
+        request.POST if request.method == "POST" else None,
+        initial={"revision": finding.implementation_revision, "remediation": remediation},
+    )
+    if request.method == "POST":
+        if request.membership.role not in {"owner", "admin", "reviewer"}:
+            raise PermissionDenied
+        if form.is_valid():
+            try:
+                configure(
+                    finding.id,
+                    "edit",
+                    form.cleaned_data["revision"],
+                    request.user.pk,
+                    form.cleaned_data["remediation"],
+                )
+            except (WorkConflict, ValidationError) as error:
+                form.add_error(None, str(error))
+            else:
+                messages.success(
+                    request, "Implementation proposal saved. Any older worker claim was cancelled."
+                )
+                return redirect(workspace_url(request, f"findings/{finding.id}/"))
     return page(
         request,
         "finding.html",
         finding=finding,
         observations=Paginator(observations, 25).get_page(request.GET.get("page")),
-        remediation=render_remediation(latest.remediation if latest else None),
+        remediation=remediation,
+        implementation_form=form,
+        activities=finding.activities.order_by("-created_at", "-pk")[:50],
         deliveries=OutboxEvent.objects.filter(observation__finding=finding).order_by("-created_at")[
             :20
         ],
+    )
+
+
+@require_POST
+@role_required("owner", "admin", "reviewer")
+def finding_implementation(request, organization_id, pk):
+    finding = get_object_or_404(Finding.objects, pk=pk)
+    try:
+        revision = int(request.POST.get("revision", ""))
+        configure(finding.id, request.POST.get("action"), revision, request.user.pk)
+    except (ValueError, ValidationError):
+        return HttpResponse(
+            "Implementation request could not be applied. Refresh the finding and try again.",
+            status=409,
+        )
+    return redirect(
+        workspace_url(
+            request, f"findings/{finding.id}/" if request.POST.get("return") == "detail" else ""
+        )
     )
 
 
@@ -680,6 +743,49 @@ def export(request, organization_id):
                 ).exists():
                     return
                 yield ("" if first else ",") + canonical(record.payload)
+                first = False
+            yield '],"finding_work":['
+            first = True
+            for finding in Finding.objects.order_by("pk").iterator(chunk_size=50):
+                if not Membership.objects.filter(
+                    user_id=user_id, organization_id=organization_id, role__in=["owner", "admin"]
+                ).exists():
+                    return
+                record = {
+                    "finding_id": str(finding.id),
+                    "fingerprint": finding.fingerprint,
+                    "repository_id": str(finding.repository_id),
+                    "lifecycle": finding.lifecycle,
+                    "to_implement": finding.implementation_requested,
+                    "revision": finding.implementation_revision,
+                    "remediation_draft": finding.implementation_text,
+                }
+                yield ("" if first else ",") + canonical(record)
+                first = False
+            yield '],"finding_activities":['
+            first = True
+            for activity in FindingActivity.objects.order_by("created_at", "pk").iterator(
+                chunk_size=10
+            ):
+                if not Membership.objects.filter(
+                    user_id=user_id, organization_id=organization_id, role__in=["owner", "admin"]
+                ).exists():
+                    return
+                record = {
+                    "id": str(activity.id),
+                    "finding_id": str(activity.finding_id),
+                    "baseline_observation_id": str(activity.baseline_observation_id),
+                    "request_id": str(activity.request_id),
+                    "created_at": activity.created_at.isoformat(),
+                    "kind": activity.kind,
+                    "status": activity.status,
+                    "actor": activity.actor,
+                    "revision": activity.revision,
+                    "proposal": activity.proposal,
+                    "comment": activity.comment,
+                    "data": activity.data,
+                }
+                yield ("" if first else ",") + canonical(record)
                 first = False
             yield "]}"
 

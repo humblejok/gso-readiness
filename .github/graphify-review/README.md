@@ -22,6 +22,8 @@ Important authorities:
 - `scripts/finding_identity.py`: stable fingerprints and baseline reconciliation
 - `scripts/render_review.py`: deterministic Markdown rendering
 - `scripts/rescore_review.py`: model-free baseline rescoring
+- `scripts/revalidate_finding.py` and `scripts/targeted_contract.py`: immutable single-finding verification, with every other baseline finding explicitly not revalidated and no aggregate scores
+- `scripts/hub_findings.py` and `scripts/implement_findings.py`: scoped Hub queue, exclusive implementation claims, isolated feature-branch worktrees, explicit commits, PR validation and idempotent completion
 - `schema/evidence.schema.json`: normalized evidence and completion contract
 - `schema/finding.schema.json`: verified finding contract
 - `schema/review.schema.json`: authoritative final JSON contract
@@ -30,3 +32,19 @@ Important authorities:
 - `scripts/validate_review.py`: final semantic and deterministic enforcement
 
 Generated output is stored in unique `output/runs/<run-id>/` directories and normally ignored using `gitignore.snippet`; archive the complete run directory when reviews are governance records.
+
+## Single-finding commands
+
+```text
+/revalidate-finding finding=ARCH-C001 baseline=path/to/review.json
+/revalidate-finding finding=ARCH-C001 baseline=path/to/review.json publish=true
+/implement-findings findings=ARCH-C001,COR-C005
+```
+
+Revalidation requires an explicit baseline and clean named checkout; `allow-dirty=true` is only a local provisional check. It creates `output/revalidations/<run>/revalidation-envelope.json`, not a replacement full review or score. Publishing requires the baseline already in the configured Hub and a token with `findings:read` + `reviews:write`.
+
+Implementation selects only open items marked **Implement** in the configured Hub project; omit `findings=` to select all queued items. The Hub must be upgraded/migrated to support the implementation API. Use Git and authenticated `gh`, a clean original checkout matching its remote tip, and a Hub token with `findings:read` + `findings:implement`, stored via `scripts/publish_review.py login` in your terminal. Shared project settings must be committed.
+
+Each item uses an isolated worktree and remote `feature/<short-ID>` branch from the original base commit. Independent targeted verification runs before and after committing. Successful PR creation resolves/unqueues only that finding and adds a summary; failure keeps it open/queued with a reason when the claim remains valid. **PRs are not merged or deployed**, and project grades/Jira stay unchanged. Existing branches are never overwritten. Cancellation, proposal edits and newer imported reviews invalidate workers; claims expire after four hours.
+
+Artifacts and worktrees remain in `output/implementations/<attempt>/`. For an uncertain `completion_pending` Hub write, retry `scripts/implement_findings.py sync --repository <original-checkout> --state <attempt>/state.json` with the exact saved completion. Never substitute a failure or rewrite the request. Do not delete branches/worktrees or stale worker locks without first inspecting whether work is still active.

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Single-finding revalidation envelope 1.0",
+  "description": "Maximum serialized UTF-8 size 256 KiB. Semantic baseline/source checks and credential-pattern guards also apply; see targeted_contract.py. No aggregate grades are permitted.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "run_id", "repository_external_id", "baseline", "source", "result", "not_revalidated"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "kind": {"const": "finding-revalidation"},
+    "run_id": {"type": "string", "format": "uuid"},
+    "repository_external_id": {"type": "string", "minLength": 1, "maxLength": 500, "pattern": "\\S"},
+    "baseline": {
+      "type": "object", "additionalProperties": false,
+      "required": ["run_id", "review_digest", "finding_id", "fingerprint"],
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 250, "pattern": "\\S"},
+        "review_digest": {"$ref": "#/$defs/hash"},
+        "finding_id": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"},
+        "fingerprint": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["commit_sha", "branch", "snapshot_hash", "dirty"],
+      "properties": {
+        "commit_sha": {"type": "string", "pattern": "^[a-f0-9]{40,64}$"},
+        "branch": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S"},
+        "snapshot_hash": {"$ref": "#/$defs/hash"},
+        "dirty": {"type": "boolean"}
+      }
+    },
+    "result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "rationale", "reviewer", "evidence", "checks"],
+      "properties": {
+        "status": {"enum": ["resolved", "still_present", "not_reproduced"]},
+        "rationale": {"$ref": "#/$defs/prose"},
+        "reviewer": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S"},
+        "evidence": {
+          "type": "array", "minItems": 1, "maxItems": 100,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["path", "fact"],
+            "properties": {
+              "path": {"type": "string", "minLength": 1, "maxLength": 1000, "pattern": "\\S", "description": "Repository-relative POSIX path; no absolute paths, colon, backslash or parent segments."},
+              "fact": {"$ref": "#/$defs/prose"}
+            }
+          }
+        },
+        "checks": {
+          "type": "array", "minItems": 1, "maxItems": 100,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["command", "status", "summary"],
+            "properties": {
+              "command": {"type": "string", "minLength": 1, "maxLength": 2000, "pattern": "\\S"},
+              "status": {"enum": ["passed", "failed", "unavailable"]},
+              "summary": {"$ref": "#/$defs/prose"}
+            }
+          }
+        }
+      },
+      "allOf": [{
+        "if": {"properties": {"status": {"const": "resolved"}}, "required": ["status"]},
+        "then": {"properties": {"checks": {"items": {"properties": {"status": {"const": "passed"}}}}}}
+      }]
+    },
+    "not_revalidated": {"type": "array", "maxItems": 1000, "uniqueItems": true, "items": {"$ref": "#/$defs/hash"}, "description": "Exactly all other baseline fingerprints; must not include the selected fingerprint."}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "prose": {"type": "string", "minLength": 1, "maxLength": 4000, "pattern": "\\S"}
+  }
+}

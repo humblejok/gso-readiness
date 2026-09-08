@@ -15,6 +15,7 @@ from django.utils import timezone
 from .models import (
     ApiClient,
     AuditEvent,
+    FindingActivity,
     Membership,
     Organization,
     RateBucket,
@@ -71,12 +72,13 @@ def usage():
         "imports_month": ReviewImport.objects.filter(
             created_at__year=now.year, created_at__month=now.month
         ).count(),
-        "storage_bytes": ReviewImport.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0,
+        "storage_bytes": (ReviewImport.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0)
+        + (FindingActivity.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0),
     }
 
 
 def issue_token(name, scopes, repository_external_id="", days=90):
-    if not set(scopes) <= {"reviews:write", "findings:read"} or not scopes:
+    if not set(scopes) <= {"reviews:write", "findings:read", "findings:implement"} or not scopes:
         raise ValidationError("Invalid token scopes.")
     secret = secrets.token_urlsafe(32)
     token = ApiClient.objects.create(

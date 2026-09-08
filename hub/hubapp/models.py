@@ -156,6 +156,9 @@ class Finding(TenantRecord):
     data = models.JSONField()
     last_seen = models.DateTimeField(default=timezone.now)
     replacement_fingerprint = models.CharField(max_length=71, blank=True)
+    implementation_requested = models.BooleanField(default=False)
+    implementation_text = models.TextField(blank=True)
+    implementation_revision = models.PositiveIntegerField(default=0)
 
     class Meta:
         constraints = [
@@ -175,6 +178,35 @@ class Observation(TenantRecord):
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["finding", "review_import"], name="observation_once")
+        ]
+
+
+class FindingActivity(TenantRecord):
+    """Immutable completion/comment history and optimistic, expiring implementation claims."""
+
+    finding = models.ForeignKey(Finding, on_delete=models.CASCADE, related_name="activities")
+    baseline_observation = models.ForeignKey(Observation, on_delete=models.CASCADE)
+    request_id = models.UUIDField()
+    kind = models.CharField(max_length=20)
+    status = models.CharField(max_length=20)
+    actor = models.CharField(max_length=100)
+    revision = models.PositiveIntegerField()
+    proposal = models.TextField(blank=True)
+    comment = models.TextField(blank=True)
+    data = models.JSONField(default=dict)
+    expires_at = models.DateTimeField(null=True)
+    payload_bytes = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "request_id"], name="finding_activity_request"
+            ),
+            models.UniqueConstraint(
+                fields=["finding"],
+                condition=models.Q(status="running"),
+                name="one_running_implementation",
+            ),
         ]
 
 

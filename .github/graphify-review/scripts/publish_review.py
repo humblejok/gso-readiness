@@ -71,7 +71,7 @@ def native_keyring():
 
 def validate_token(value: str) -> str:
     if not isinstance(value, str) or not TOKEN_PATTERN.fullmatch(value):
-        raise PublishError("Expected a Hub workspace API token (UUID.secret) with reviews:write permission.")
+        raise PublishError("Expected a Hub workspace API token (UUID.secret) with the permissions required by your command.")
     try:
         uuid.UUID(value.split(".", 1)[0])
     except ValueError as exc:
@@ -106,7 +106,7 @@ def credential_action(action: str, repository: Path) -> dict:
         if action == "logout":
             backend.delete_password(service, "workspace-token")
             return {"status": "logged_out", "hub_url": hub, "message": "Local credential removed. Revoke the token in Hub to invalidate it elsewhere. Environment tokens are unaffected."}
-        print(f"Hub: {hub}\nIn the intended Hub workspace, create an API token with reviews:write permission.\nPaste it below; it is stored in your OS credential store, never in this repository. This replaces any locally saved token for this Hub.")
+        print(f"Hub: {hub}\nCreate a workspace API token with the command's scopes: reviews:write for uploads; findings:read plus findings:implement for queued implementations.\nPaste it below; it is stored in your OS credential store, never in this repository. This replaces any locally saved token for this Hub.")
         with warnings.catch_warnings():
             warnings.simplefilter("error", getpass.GetPassWarning)
             token = validate_token(getpass.getpass("Hub workspace token (hidden): "))

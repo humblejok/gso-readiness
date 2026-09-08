@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Finding Hub API",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Workspace-scoped review registry. Tenant identity derives exclusively from the bearer token. Administrative changes use the CSRF-protected browser interface."
   },
   "security": [
@@ -15,10 +15,45 @@
       "workspaceToken": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Shown-once workspace token: UUID.secret; scopes reviews:write and/or findings:read."
+        "description": "Shown-once workspace token: UUID.secret; scopes reviews:write, findings:read, findings:implement. Implementing requires both findings:read and findings:implement."
       }
     },
     "schemas": {
+      "TargetedEnvelope": {"$ref": "./targeted-revalidation.schema.json"},
+      "ImplementationRequest": {
+        "oneOf": [
+          {
+            "type": "object", "additionalProperties": false,
+            "required": ["action", "revision", "request_id"],
+            "properties": {
+              "action": {"const": "claim"},
+              "revision": {"type": "integer", "minimum": 0},
+              "request_id": {"type": "string", "format": "uuid"}
+            }
+          },
+          {
+            "type": "object", "additionalProperties": false,
+            "required": ["action", "attempt_id", "completion"],
+            "properties": {
+              "action": {"const": "complete"},
+              "attempt_id": {"type": "string", "format": "uuid"},
+              "completion": {
+                "type": "object", "additionalProperties": false,
+                "required": ["outcome", "comment", "report", "pull_request", "commit_sha", "base_branch"],
+                "properties": {
+                  "outcome": {"enum": ["succeeded", "failed"]},
+                  "comment": {"type": "string", "minLength": 1, "maxLength": 8000},
+                  "report": {"oneOf": [{"$ref": "#/components/schemas/TargetedEnvelope"}, {"type": "null"}]},
+                  "pull_request": {"type": "string", "maxLength": 1000},
+                  "commit_sha": {"type": "string"},
+                  "base_branch": {"type": "string"}
+                },
+                "description": "Success additionally requires a clean resolved report for the matching commit/feature branch and a matching HTTPS PR to a different original base branch. Failure uses null report and available Git metadata. Maximum serialized completion size: 256 KiB."
+              }
+            }
+          }
+        ]
+      },
       "ImportResult": {
         "type": "object",
         "required": ["import_id", "repository_id", "run_id", "created_findings", "updated_findings", "lifecycle_changes", "jira"],
@@ -352,8 +387,11 @@
     "/api/v1/findings": {
       "get": {
         "operationId": "listFindings",
-        "description": "Requires findings:read. Pages contain 50 items in created_at/UUID order.",
+        "description": "Requires findings:read. Pages contain 50 items in created_at/UUID order. Items include display_id, to_implement and revision. Unlike the browser's default filter, the API only applies explicit filters.",
         "parameters": [
+          {"name": "repository_external_id", "in": "query", "schema": {"type": "string"}, "description": "Exact stable project external ID, intersected with token restrictions."},
+          {"name": "to_implement", "in": "query", "schema": {"type": "string", "enum": ["true"]}, "description": "Select only queued, open findings in active repositories."},
+          {"name": "ids", "in": "query", "schema": {"type": "string"}, "description": "Comma-separated exact display IDs, at most 100. Does not broaden repository/token restrictions."},
           {
             "name": "page",
             "in": "query",
@@ -412,6 +450,54 @@
           "404": {
             "description": "Absent or inaccessible workspace object"
           }
+        }
+      }
+    },
+    "/api/v1/findings/{id}/implementation": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "get": {
+        "operationId": "getFindingImplementationContext",
+        "description": "Requires findings:read. Returns finding_id, display_id, repository_external_id, clone_url, fingerprint, revision, lifecycle, to_implement, baseline_observation_id, baseline_import_id, remediation and finding data.",
+        "responses": {
+          "200": {"description": "Current tenant-scoped source/proposal context"},
+          "401": {"description": "Invalid token"},
+          "403": {"description": "Insufficient scope"},
+          "404": {"description": "Absent or inaccessible finding"}
+        }
+      },
+      "post": {
+        "operationId": "claimOrCompleteFindingImplementation",
+        "description": "Requires findings:read AND findings:implement. Claim uses a unique request UUID and current revision, freezes the proposal and grants a four-hour exclusive lease. Complete binds the same token actor and appends history. Exact retries replay; cancelled, expired, changed or superseded state conflicts. Success resolves on an unmerged feature branch only; no project-grade or Jira update. The client must independently verify source and PR; the Hub does not call GitHub.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ImplementationRequest"}}}},
+        "responses": {
+          "200": {"description": "Claim replay (context, attempt_id, expires_at) or completion (activity_id, status, finding_id, comment, result lifecycle/to_implement)"},
+          "201": {"description": "New exclusive claim; context plus attempt_id, expires_at and frozen remediation"},
+          "400": {"description": "Invalid request, quota or evidence contract"},
+          "401": {"description": "Invalid token"},
+          "403": {"description": "Missing scope or inactive workspace entitlement"},
+          "404": {"description": "Absent/inaccessible finding or claim"},
+          "409": {"description": "Conflicting claim/replay, expired/cancelled claim, changed revision or baseline"},
+          "429": {"description": "Rate limited"}
+        }
+      }
+    },
+    "/api/v1/findings/{id}/revalidation": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "revalidateSingleFinding",
+        "description": "Requires reviews:write. Record one clean targeted result bound to the latest imported baseline and pre-verification revision. Idempotency uses report.run_id. Refuses an active implementation claim. Other findings, full-review observations, grades and Jira remain unchanged.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "additionalProperties": false, "required": ["revision", "report"],
+          "properties": {"revision": {"type": "integer", "minimum": 0}, "report": {"$ref": "#/components/schemas/TargetedEnvelope"}}
+        }}}},
+        "responses": {
+          "200": {"description": "Recorded result or identical replay: activity_id, status, finding_id, comment and result lifecycle/to_implement"},
+          "400": {"description": "Invalid request, quota or targeted contract"},
+          "401": {"description": "Invalid token"},
+          "403": {"description": "Insufficient scope or workspace entitlement"},
+          "404": {"description": "Absent/inaccessible finding"},
+          "409": {"description": "Stale revision/baseline, active claim or conflicting run identity"},
+          "429": {"description": "Rate limited"}
         }
       }
     },

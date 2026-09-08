@@ -1,10 +1,12 @@
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from django.db import DatabaseError, close_old_connections, connection, transaction
 
+from hubapp import finding_work
 from hubapp.imports import import_review
-from hubapp.models import Finding, Repository, ReviewImport
+from hubapp.models import Finding, FindingActivity, Repository, ReviewImport
 from hubapp.services import create_workspace
 from hubapp.tenancy import tenant_scope
 
@@ -70,3 +72,61 @@ def test_postgres_reference_trigger_rejects_cross_workspace_fk(org, owner, envel
             verification_status="supported",
             data={},
         )
+
+
+def test_postgres_activity_rls_and_foreign_references(org, owner, envelope, key):
+    other = create_workspace(owner, "Activity isolation")
+    with tenant_scope(org.id):
+        import_review(envelope, key)
+        finding = Finding.objects.filter(lifecycle="open").first()
+        finding = finding_work.configure(
+            finding.id, "implement", finding.implementation_revision, "owner"
+        )
+        attempt, _ = finding_work.claim(
+            finding.id, finding.implementation_revision, uuid.uuid4(), "worker"
+        )
+    with tenant_scope(other.id):
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM hubapp_findingactivity")
+            assert cursor.fetchone()[0] == 0
+        with pytest.raises(DatabaseError), transaction.atomic():
+            FindingActivity.all_objects.create(
+                organization=other,
+                finding=finding,
+                baseline_observation_id=attempt.baseline_observation_id,
+                request_id=uuid.uuid4(),
+                kind="revalidation",
+                status="succeeded",
+                revision=1,
+            )
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT COUNT(*) FROM hubapp_findingactivity")
+        assert cursor.fetchone()[0] == 0
+
+
+def test_postgres_concurrent_claim_has_one_winner(org, envelope, key):
+    with tenant_scope(org.id):
+        import_review(envelope, key)
+        finding = Finding.objects.filter(lifecycle="open").first()
+        finding = finding_work.configure(
+            finding.id, "implement", finding.implementation_revision, "owner"
+        )
+
+    def run():
+        close_old_connections()
+        try:
+            with tenant_scope(org.id):
+                try:
+                    finding_work.claim(
+                        finding.id, finding.implementation_revision, uuid.uuid4(), "worker"
+                    )
+                    return "claimed"
+                except finding_work.WorkConflict:
+                    return "conflict"
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert sorted(executor.map(lambda _: run(), range(2))) == ["claimed", "conflict"]
+    with tenant_scope(org.id):
+        assert FindingActivity.objects.filter(status="running").count() == 1

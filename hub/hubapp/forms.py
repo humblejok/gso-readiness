@@ -40,6 +40,7 @@ class TokenForm(forms.Form):
         choices=[
             ("reviews:write", "Upload reviews"),
             ("findings:read", "Read findings"),
+            ("findings:implement", "Claim and complete queued implementations"),
         ],
         widget=forms.CheckboxSelectMultiple,
     )
@@ -49,6 +50,15 @@ class TokenForm(forms.Form):
         help_text="Optional: restrict the token to one stable repository external ID.",
     )
     days = forms.IntegerField(min_value=1, max_value=365, initial=90, label="Expires after days")
+
+
+class ImplementationForm(forms.Form):
+    revision = forms.IntegerField(min_value=0, widget=forms.HiddenInput)
+    remediation = forms.CharField(
+        max_length=64000,
+        widget=forms.Textarea(attrs={"rows": 16}),
+        label="Implementation / remediation",
+    )
 
 
 class InviteForm(forms.Form):

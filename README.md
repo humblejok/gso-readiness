@@ -6,6 +6,38 @@ Copyright © 2026 De Jonckheere Stéphane (humblejok). Licensed under [GNU AGPL-
 
 An evidence-first production-readiness workflow for VS Code, GitHub Copilot agents, and Graphify. The runtime kit lives under `.github/`; the repository-root Windows and macOS/Linux installers are distribution helpers. The authoritative output is JSON and the companion `REVIEW.md` is generated for people.
 
+## Revalidate and implement findings
+
+To check one corrected item without rerunning the entire review:
+
+```text
+/revalidate-finding finding=ARCH-C001 baseline=.github/graphify-review/output/runs/<baseline-run>/review.json
+```
+
+Commit intended changes first. Add `allow-dirty=true` only for a provisional local check. The command independently verifies that one finding and creates a new `revalidation-envelope.json`; other findings remain **not revalidated**, and whole-project grades are unchanged. It does not rewrite `REVIEW.md` or an older full-review envelope. Add `publish=true` to update only that finding in the configured Hub (requires a clean commit, the matching imported baseline and a token with `findings:read` + `reviews:write`). Use `/full-project-review mode=revalidate baseline=...` when you need an updated whole-project report and grades.
+
+To implement findings selected in the Hub:
+
+1. Upgrade the Hub and run its database migrations; see [Hub upgrade instructions](hub/README.md#upgrade-for-finding-implementation).
+2. On **Findings**, click **Implement** on open items. **Cancel implementation** removes the flag. Queued items have an editable remediation on their details page. Rejected/inconclusive items are hidden by default; use **Show rejected and inconclusive** to include them.
+3. Install GitHub CLI (`gh`) through your approved channel and authenticate to your GitHub/GitHub Enterprise host. The checkout must be clean, on a named branch, and match its remote branch tip. Commit shared project settings from `/setup-review` so they exist on new worktrees.
+4. Issue a repository-restricted Hub token with `findings:read` and `findings:implement` (optionally also `reviews:write` for publishing). Save it using the existing terminal login helper; never paste it into Copilot chat:
+
+```text
+<review-python> .github/graphify-review/scripts/publish_review.py login --repository .
+```
+
+Then use either:
+
+```text
+/implement-findings findings=ARCH-C001,COR-C005
+/implement-findings
+```
+
+Without a filter, all queued open findings for this configured project are selected. Each runs sequentially in an isolated worktree on `feature/<short-ID>`, from the original checkout's commit. The remote branch is created before edits. A passing independent revalidation allows an explicit-file commit; a second revalidation of that clean commit precedes pushing and creating a PR to the original branch. Only then is the Hub finding resolved, unqueued and given a factual summary/PR link. **Resolved on the feature branch does not mean merged or deployed.** Nothing automatically merges a PR or resolves Jira.
+
+Failures keep the finding open and queued with a reason when the Hub claim is still valid. Existing feature branches block rather than being overwritten. Cancellation, edited proposals and newer imported reviews invalidate stale workers. Worktrees/branches are retained for inspection; uncertain Hub writes retry the identical saved completion. See [recovery, permissions and API details](docs/finding_implementation_workflow.md).
+
 ## Guided setup (recommended)
 
 You need Python 3.10+, VS Code with Copilot installed/signed in, and the project folder you want reviewed. This repository distributes a Copilot command kit, not a separately installed VS Code extension. You do not need to install or host Finding Hub to run reviews.

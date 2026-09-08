@@ -8,10 +8,11 @@ from rest_framework.exceptions import PermissionDenied, Throttled
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .contracts import render_remediation
+from . import finding_work
 from .imports import ImportConflict, import_review
 from .models import Finding, Observation, OutboxEvent, Repository, ReviewImport
 from .services import rate_limit
+from .targeted_contract import TargetedError
 
 
 def permitted(request, scope):
@@ -49,6 +50,9 @@ def finding_data(row):
         "lifecycle": row.lifecycle,
         "last_seen": row.last_seen,
         "finding": row.data,
+        "display_id": row.display_id,
+        "to_implement": row.implementation_requested,
+        "revision": row.implementation_revision,
     }
 
 
@@ -120,6 +124,21 @@ class FindingsAPI(APIView):
     def get(self, request, repository_id=None):
         permitted(request, "findings:read")
         query = repository_filter(request, Finding.objects.all())
+        if request.query_params.get("repository_external_id"):
+            query = query.filter(
+                repository__external_id=request.query_params["repository_external_id"]
+            )
+        if request.query_params.get("to_implement") == "true":
+            query = query.filter(
+                implementation_requested=True, lifecycle="open", repository__active=True
+            )
+        if request.query_params.get("ids"):
+            ids = request.query_params["ids"].split(",")
+            if len(ids) > 100:
+                return Response(
+                    {"error": "At most 100 finding identifiers are allowed."}, status=400
+                )
+            query = query.filter(display_id__in=ids)
         if repository_id:
             query = query.filter(repository_id=repository_id)
         for field in ("lifecycle", "severity", "category", "verification_status"):
@@ -157,7 +176,7 @@ class FindingDetailAPI(APIView):
             return Response(
                 {
                     "remediation": latest.remediation if latest else None,
-                    "markdown": render_remediation(latest.remediation if latest else None),
+                    "markdown": finding_work.remediation_text(finding, latest),
                 }
             )
         if part == "deliveries":
@@ -167,6 +186,107 @@ class FindingDetailAPI(APIView):
                 lambda r: {"id": str(r.id), "state": r.state, "attempts": r.attempts},
             )
         return Response(finding_data(finding))
+
+
+class FindingWorkAPI(APIView):
+    def get(self, request, pk):
+        permitted(request, "findings:read")
+        from django.shortcuts import get_object_or_404
+
+        finding = get_object_or_404(
+            repository_filter(request, Finding.objects.select_related("repository")), pk=pk
+        )
+        return Response(finding_work.context(finding))
+
+    def post(self, request, pk):
+        permitted(request, "findings:implement")
+        permitted(request, "findings:read")
+        from django.shortcuts import get_object_or_404
+
+        finding = get_object_or_404(repository_filter(request, Finding.objects.all()), pk=pk)
+        if not rate_limit("work:" + str(request.auth.organization_id), 60):
+            raise Throttled()
+        try:
+            if request.data.get("action") == "claim" and set(request.data) == {
+                "action",
+                "revision",
+                "request_id",
+            }:
+                attempt, created = finding_work.claim(
+                    finding.id,
+                    request.data["revision"],
+                    request.data["request_id"],
+                    request.auth.pk,
+                )
+                return Response(
+                    {
+                        **finding_work.context(finding),
+                        "attempt_id": str(attempt.id),
+                        "expires_at": attempt.expires_at,
+                        "remediation": attempt.proposal,
+                    },
+                    status=201 if created else 200,
+                )
+            if request.data.get("action") == "complete" and set(request.data) == {
+                "action",
+                "attempt_id",
+                "completion",
+            }:
+                return Response(
+                    finding_work.complete(
+                        finding.id,
+                        request.data["attempt_id"],
+                        request.data["completion"],
+                        request.auth.pk,
+                    )
+                )
+            return Response({"error": "Unknown implementation operation."}, status=400)
+        except finding_work.WorkConflict as error:
+            return Response({"error": str(error)}, status=409)
+        except DjangoPermissionDenied as error:
+            raise PermissionDenied(str(error)) from error
+        except (
+            DjangoValidationError,
+            TargetedError,
+            ValueError,
+            KeyError,
+            TypeError,
+            AttributeError,
+        ):
+            return Response({"error": "Invalid implementation request."}, status=400)
+        except finding_work.FindingActivity.DoesNotExist:
+            return Response({"error": "Implementation claim not found."}, status=404)
+
+
+class FindingRevalidationAPI(APIView):
+    def post(self, request, pk):
+        permitted(request, "reviews:write")
+        from django.shortcuts import get_object_or_404
+
+        finding = get_object_or_404(repository_filter(request, Finding.objects.all()), pk=pk)
+        if not rate_limit("targeted:" + str(request.auth.organization_id), 30):
+            raise Throttled()
+        try:
+            if set(request.data) != {"revision", "report"}:
+                return Response({"error": "Expected revision and report."}, status=400)
+            return Response(
+                finding_work.revalidate(
+                    finding.id, request.data["revision"], request.data["report"], request.auth.pk
+                )
+            )
+        except finding_work.WorkConflict as error:
+            return Response({"error": str(error)}, status=409)
+        except DjangoPermissionDenied as error:
+            raise PermissionDenied(str(error)) from error
+        except (
+            DjangoValidationError,
+            TargetedError,
+            ValueError,
+            KeyError,
+            TypeError,
+            AttributeError,
+        ):
+            return Response({"error": "Invalid targeted revalidation."}, status=400)
 
 
 def live(request):
