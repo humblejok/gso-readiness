@@ -1,0 +1,7 @@
+-r requirements.txt
+-c requirements-dev.lock
+pytest==9.1.1
+pytest-django==4.14.0
+pip-audit==2.10.1
+bandit==1.9.4
+ruff==0.16.6

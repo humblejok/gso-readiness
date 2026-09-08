@@ -1,1 +1,9 @@
 *.pyc
+__pycache__/
+.finding-hub-venv/
+hub/.env
+hub/*.sqlite3
+hub/staticfiles/
+hub/.pytest_cache/
+.pytest_cache/
+hub/.coverage

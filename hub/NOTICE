@@ -1,0 +1,13 @@
+Graphify Finding Hub
+Original concept and project creator: De Jonckheere Stéphane (humblejok).
+Copyright (C) 2026 De Jonckheere Stéphane (humblejok).
+SPDX-License-Identifier: AGPL-3.0-only
+
+The original application and vendored review-kit contracts are licensed under
+AGPL-3.0-only. See LICENSE. Retain applicable notices, identify modifications,
+and provide corresponding source as required by the license when distributing
+or operating modified covered versions over a network.
+
+This notice adds no advertising requirement or additional license restriction.
+Third-party dependencies retain their own licenses. This independent project is
+not endorsed by Graphify-Labs, GitHub, Microsoft, Atlassian or JFrog.

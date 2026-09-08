@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""Graphify Finding Hub. Copyright 2026 De Jonckheere Stéphane (humblejok). AGPL-3.0-only."""
+
+import os
+import sys
+
+if __name__ == "__main__":
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+    from django.core.management import execute_from_command_line
+
+    execute_from_command_line(sys.argv)

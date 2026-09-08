@@ -1,0 +1,27 @@
+# Runtime lock, Python 3.12/3.13. Regenerate and audit before upgrading.
+asgiref==3.12.1
+attrs==26.1.0
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.1
+cryptography==50.0.1
+dj-database-url==3.1.2
+django==5.2.17
+django-axes==8.3.1
+djangorestframework==3.18.0
+dnspython==2.8.0
+gunicorn==26.2.0
+idna==3.19
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+psycopg==3.3.5
+psycopg-binary==3.3.5
+pycparser==3.0
+referencing==0.37.0
+requests==2.34.2
+rpds-py==2026.6.3
+sqlparse==0.6.0
+stripe==15.6.1
+typing-extensions==4.16.0
+urllib3==2.7.0
+whitenoise==6.12.0

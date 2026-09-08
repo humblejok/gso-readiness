@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/graphify-review/review.schema.json",
+  "title": "Graphify production readiness review v2.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run", "review", "assessment_confidence", "production_readiness", "findings", "accepted_risks", "rejected_findings", "inconclusive_findings", "strengths", "coverage", "tooling", "statistics"],
+  "properties": {
+    "schema_version": {"const": "2.1"},
+    "run": {
+      "type": "object", "additionalProperties": false,
+      "required": ["run_id", "mode", "source_snapshot_hash", "output_directory", "baseline", "finding_reconciliation", "anchor_dispositions"],
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1},
+        "mode": {"enum": ["fresh", "revalidate", "rescore"]},
+        "source_snapshot_hash": {"type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$"},
+        "output_directory": {"type": "string", "minLength": 1},
+        "baseline": {"oneOf": [{"type": "null"}, {"type": "object"}]},
+        "finding_reconciliation": {"type": "array", "items": {"$ref": "#/$defs/reconciliation"}},
+        "anchor_dispositions": {"type": "array", "items": {"$ref": "#/$defs/anchor_disposition"}}
+      }
+    },
+    "review": {
+      "type": "object", "additionalProperties": false, "required": ["id", "timestamp_utc", "repository", "profile", "manifest"],
+      "properties": {"id": {"type": "string", "minLength": 1}, "timestamp_utc": {"type": "string", "format": "date-time"}, "repository": {"type": "object"}, "profile": {"$ref": "#/$defs/profile_summary"}, "manifest": {"type": "object"}}
+    },
+    "assessment_confidence": {
+      "type": "object", "additionalProperties": false, "required": ["score_percent", "level", "coverage", "states", "completions", "limitations", "unmet_decision_requirements", "below_decision_threshold"],
+      "properties": {
+        "score_percent": {"type": "integer", "minimum": 0, "maximum": 100}, "level": {"enum": ["high", "medium", "low"]},
+        "coverage": {"type": "object", "additionalProperties": {"type": "boolean"}},
+        "states": {"type": "object", "additionalProperties": {"enum": ["not_run", "passed", "failed", "unavailable", "not_applicable"]}},
+        "completions": {"type": "object", "additionalProperties": {"enum": ["complete", "partial", "not_completed", "not_applicable"]}},
+        "limitations": {"type": "array", "items": {"type": "string"}},
+        "unmet_decision_requirements": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "below_decision_threshold": {"type": "boolean"}
+      }
+    },
+    "production_readiness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["score_10", "score_breakdown", "status", "release_recommendation", "category_scores", "release_blockers", "required_before_production", "recommended_after_release", "applied_category_caps", "applied_hard_gates", "summary", "scoring_notes"],
+      "properties": {
+        "score_10": {"type": "number", "minimum": 0, "maximum": 10, "multipleOf": 0.1},
+        "score_breakdown": {"type": "object", "additionalProperties": false, "required": ["weighted_category_score_10", "weakest_category_score_10", "weakest_categories", "weighted_average_weight", "weakest_category_weight", "pre_gate_score_10"], "properties": {"weighted_category_score_10": {"$ref": "#/$defs/score"}, "weakest_category_score_10": {"$ref": "#/$defs/score"}, "weakest_categories": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["architecture", "correctness", "maintainability", "security", "deployability", "testing", "operations"]}}, "weighted_average_weight": {"type": "number", "minimum": 0, "maximum": 1}, "weakest_category_weight": {"type": "number", "minimum": 0, "maximum": 1}, "pre_gate_score_10": {"$ref": "#/$defs/score"}}},
+        "status": {"enum": ["ready", "ready_with_actions", "conditional", "not_ready", "insufficient_evidence"]},
+        "release_recommendation": {"enum": ["GO", "GO_WITH_ACTIONS", "CONDITIONAL", "NO_GO", "INSUFFICIENT_EVIDENCE"]},
+        "category_scores": {"$ref": "#/$defs/category_scores"},
+        "release_blockers": {"$ref": "#/$defs/id_list"}, "required_before_production": {"$ref": "#/$defs/id_list"}, "recommended_after_release": {"$ref": "#/$defs/id_list"},
+        "applied_category_caps": {"type": "array", "items": {"type": "object"}}, "applied_hard_gates": {"type": "array", "items": {"type": "object"}}, "summary": {"type": "string"}, "scoring_notes": {"type": "string"}
+      }
+    },
+    "findings": {"type": "array", "items": {"$ref": "finding.schema.json"}},
+    "accepted_risks": {"type": "array", "items": {"type": "object"}},
+    "rejected_findings": {"type": "array", "items": {"$ref": "finding.schema.json"}},
+    "inconclusive_findings": {"type": "array", "items": {"$ref": "finding.schema.json"}},
+    "strengths": {
+      "type": "array", "items": {
+        "type": "object", "additionalProperties": false, "required": ["id", "category", "title", "description", "evidence"],
+        "properties": {"id": {"type": "string"}, "category": {"enum": ["architecture", "correctness", "maintainability", "security", "deployability", "testing", "operations"]}, "title": {"type": "string"}, "description": {"type": "string"}, "evidence": {"type": "array", "items": {"type": "object"}}}
+      }
+    },
+    "coverage": {"type": "object"},
+    "tooling": {"type": "object", "additionalProperties": {"type": "object"}},
+    "statistics": {
+      "type": "object", "additionalProperties": false, "required": ["verified_findings", "rejected_findings", "inconclusive_findings", "by_severity", "by_category", "by_technical_quality_impact", "by_production_impact"],
+      "properties": {"verified_findings": {"type": "integer", "minimum": 0}, "rejected_findings": {"type": "integer", "minimum": 0}, "inconclusive_findings": {"type": "integer", "minimum": 0}, "by_severity": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}, "by_category": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}, "by_technical_quality_impact": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}, "by_production_impact": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}}
+    }
+  },
+  "$defs": {
+    "anchor_disposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["anchor_id", "status", "rationale", "evidence"],
+      "properties": {
+        "anchor_id": {"type": "string", "minLength": 1},
+        "status": {"enum": ["promoted", "dismissed", "inconclusive"]},
+        "finding_id": {"type": "string", "minLength": 1},
+        "rationale": {"type": "string", "minLength": 1},
+        "evidence": {"type": "array", "minItems": 1, "items": {"type": "object"}}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"enum": ["promoted", "inconclusive"]}}}, "then": {"required": ["finding_id"]}}
+      ]
+    },
+    "reconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseline_fingerprint", "baseline_id", "status"],
+      "properties": {
+        "baseline_fingerprint": {"type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$"},
+        "baseline_id": {"type": "string", "minLength": 1},
+        "status": {"enum": ["still_present", "resolved", "superseded", "not_reproduced"]},
+        "current_id": {"type": "string", "minLength": 1},
+        "replacement_fingerprint": {"type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$"},
+        "rationale": {"type": "string", "minLength": 1},
+        "evidence": {"type": "array", "minItems": 1, "items": {"type": "object"}}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"const": "still_present"}}}, "then": {"required": ["current_id"]}},
+        {"if": {"properties": {"status": {"enum": ["resolved", "superseded", "not_reproduced"]}}}, "then": {"required": ["rationale", "evidence"]}},
+        {"if": {"properties": {"status": {"const": "superseded"}}}, "then": {"required": ["replacement_fingerprint", "current_id"]}}
+      ]
+    },
+    "id_list": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "profile_summary": {"type": "object", "additionalProperties": false, "required": ["id", "version", "display_name", "hash", "detection_state"], "properties": {"id": {"type": "string", "minLength": 1}, "version": {"type": "integer", "minimum": 1}, "display_name": {"type": "string", "minLength": 1}, "hash": {"type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$"}, "detection_state": {"enum": ["matched", "not_detected", "not_applicable"]}}},
+    "category_scores": {"type": "object", "additionalProperties": false, "required": ["architecture", "correctness", "maintainability", "security", "deployability", "testing", "operations"], "properties": {"architecture": {"$ref": "#/$defs/score"}, "correctness": {"$ref": "#/$defs/score"}, "maintainability": {"$ref": "#/$defs/score"}, "security": {"$ref": "#/$defs/score"}, "deployability": {"$ref": "#/$defs/score"}, "testing": {"$ref": "#/$defs/score"}, "operations": {"$ref": "#/$defs/score"}}},
+    "score": {"type": "number", "minimum": 0, "maximum": 10, "multipleOf": 0.1}
+  }
+}

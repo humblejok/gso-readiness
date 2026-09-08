@@ -6,6 +6,12 @@ Copyright © 2026 De Jonckheere Stéphane (humblejok). Licensed under [GNU AGPL-
 
 An evidence-first production-readiness workflow for VS Code, GitHub Copilot agents, and Graphify. The runtime kit lives under `.github/`; the repository-root Windows and macOS/Linux installers are distribution helpers. The authoritative output is JSON and the companion `REVIEW.md` is generated for people.
 
+## Optional Finding Hub web application
+
+The separate [Django Finding Hub](hub/README.md) in `hub/` provides customer workspaces, review uploads, findings/remediation history, scoped API tokens, optional Jira delivery, configurable subscriptions and enterprise branding. It supports PostgreSQL for hosting and SQLite for development. The existing kit installers do not install the Hub or change its database.
+
+See [local setup and deployment](hub/README.md), the [updated SaaS/white-label specification](docs/graphify_finding_hub_spec.md), and the Hub's production launch checklist. Billing and Jira need operator configuration; native enterprise SSO/MFA and several operational extensions are explicitly not included in the initial pilot. The application remains AGPL-3.0-only, with no proprietary enterprise license assumed.
+
 The kit keeps responsibilities deliberately separate:
 
 - Graphify provides structural evidence and investigation targets.

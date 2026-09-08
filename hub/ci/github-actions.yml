@@ -1,0 +1,57 @@
+# Copy to this repository's .github/workflows/finding-hub.yml to enable.
+# Kept outside the installable kit so recipient projects do not inherit Hub-only CI.
+name: Finding Hub
+on:
+  push:
+    paths: ["hub/**", "docs/graphify_finding_hub_spec.md", ".github/workflows/finding-hub.yml"]
+  pull_request:
+    paths: ["hub/**", "docs/graphify_finding_hub_spec.md", ".github/workflows/finding-hub.yml"]
+permissions:
+  contents: read
+jobs:
+  sqlite:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r hub/requirements-dev.txt
+      - run: python hub/manage.py check
+      - run: python hub/manage.py makemigrations --check --dry-run
+      - run: python -m pytest -q
+        working-directory: hub
+      - run: python -m pip_audit -r hub/requirements.txt
+      - run: python -m bandit -r hub/hubapp hub/config -q
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: disposable-ci-password
+          POSTGRES_DB: hubtest
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://hubtest:disposable-ci-password@127.0.0.1:5432/hubtest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install -r hub/requirements-dev.txt
+      - name: Create non-superuser test role
+        env:
+          PGPASSWORD: disposable-ci-password
+        run: >-
+          psql -h 127.0.0.1 -U postgres -d hubtest -c
+          "CREATE ROLE hubtest LOGIN PASSWORD 'disposable-ci-password' CREATEDB NOSUPERUSER NOBYPASSRLS;
+          ALTER DATABASE hubtest OWNER TO hubtest;"
+      - run: python -m pytest -q
+        working-directory: hub

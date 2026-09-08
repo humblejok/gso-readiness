@@ -1,0 +1,572 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Finding Hub API",
+    "version": "0.1.0",
+    "description": "Workspace-scoped review registry. Tenant identity derives exclusively from the bearer token. Administrative changes use the CSRF-protected browser interface."
+  },
+  "security": [
+    {
+      "workspaceToken": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "workspaceToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Shown-once workspace token: UUID.secret; scopes reviews:write and/or findings:read."
+      }
+    },
+    "schemas": {
+      "ImportEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema_version",
+          "repository",
+          "source",
+          "review",
+          "remediations"
+        ],
+        "properties": {
+          "schema_version": {
+            "const": "1.0"
+          },
+          "repository": {
+            "type": "object",
+            "required": [
+              "external_id",
+              "name",
+              "default_branch"
+            ],
+            "properties": {
+              "external_id": {
+                "type": "string",
+                "maxLength": 500
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "default_branch": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "clone_url": {
+                "type": "string",
+                "format": "uri"
+              }
+            }
+          },
+          "source": {
+            "type": "object",
+            "required": [
+              "commit_sha",
+              "branch"
+            ],
+            "properties": {
+              "commit_sha": {
+                "type": "string",
+                "pattern": "^[a-fA-F0-9]{7,64}$"
+              },
+              "branch": {
+                "type": "string"
+              }
+            }
+          },
+          "review": {
+            "$ref": "./review.schema.json"
+          },
+          "remediations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "Source-bound remediation schema 1.0; see specification section 7.3."
+            }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/v1/review-imports": {
+      "post": {
+        "operationId": "importReview",
+        "description": "Requires reviews:write; bounded to 10 MiB. Exact replays remain allowed after expiry.",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "repository.external_id:review.run.run_id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportEnvelope"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Identical replay"
+          },
+          "201": {
+            "description": "New immutable import"
+          },
+          "400": {
+            "description": "Contract validation failed"
+          },
+          "401": {
+            "description": "Invalid token"
+          },
+          "403": {
+            "description": "Insufficient scope, inactive subscription or exceeded allowance"
+          },
+          "409": {
+            "description": "Same run identity with different content"
+          },
+          "413": {
+            "description": "Body too large"
+          },
+          "429": {
+            "description": "Rate limited"
+          }
+        }
+      }
+    },
+    "/api/v1/review-imports/{id}": {
+      "get": {
+        "operationId": "getReviewImport",
+        "description": "Requires findings:read. ",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authorized result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid token"
+          },
+          "403": {
+            "description": "Insufficient scope"
+          },
+          "404": {
+            "description": "Absent or inaccessible workspace object"
+          }
+        }
+      }
+    },
+    "/api/v1/repositories": {
+      "get": {
+        "operationId": "listRepositories",
+        "description": "Requires findings:read. Pages contain 50 items in created_at/UUID order.",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authorized result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid token"
+          },
+          "403": {
+            "description": "Insufficient scope"
+          },
+          "404": {
+            "description": "Absent or inaccessible workspace object"
+          }
+        }
+      }
+    },
+    "/api/v1/repositories/{id}": {
+      "get": {
+        "operationId": "getRepository",
+        "description": "Requires findings:read. ",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authorized result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid token"
+          },
+          "403": {
+            "description": "Insufficient scope"
+          },
+          "404": {
+            "description": "Absent or inaccessible workspace object"
+          }
+        }
+      }
+    },
+    "/api/v1/repositories/{id}/findings": {
+      "get": {
+        "operationId": "listRepositoryFindings",
+        "description": "Requires findings:read. Pages contain 50 items in created_at/UUID order.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lifecycle",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "verification_status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authorized result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid token"
+          },
+          "403": {
+            "description": "Insufficient scope"
+          },
+          "404": {
+            "description": "Absent or inaccessible workspace object"
+          }
+        }
+      }
+    },
+    "/api/v1/findings": {
+      "get": {
+        "operationId": "listFindings",
+        "description": "Requires findings:read. Pages contain 50 items in created_at/UUID order.",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lifecycle",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "verification_status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authorized result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid token"
+          },
+          "403": {
+            "description": "Insufficient scope"
+          },
+          "404": {
+            "description": "Absent or inaccessible workspace object"
+          }
+        }
+      }
+    },
+    "/api/v1/findings/{id}": {
+      "get": {
+        "operationId": "getFinding",
+        "description": "Requires findings:read. ",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authorized result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid token"
+          },
+          "403": {
+            "description": "Insufficient scope"
+          },
+          "404": {
+            "description": "Absent or inaccessible workspace object"
+          }
+        }
+      }
+    },
+    "/api/v1/findings/{id}/observations": {
+      "get": {
+        "operationId": "listObservations",
+        "description": "Requires findings:read. Pages contain 50 items in created_at/UUID order.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authorized result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid token"
+          },
+          "403": {
+            "description": "Insufficient scope"
+          },
+          "404": {
+            "description": "Absent or inaccessible workspace object"
+          }
+        }
+      }
+    },
+    "/api/v1/findings/{id}/remediation": {
+      "get": {
+        "operationId": "getRemediation",
+        "description": "Requires findings:read. ",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authorized result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid token"
+          },
+          "403": {
+            "description": "Insufficient scope"
+          },
+          "404": {
+            "description": "Absent or inaccessible workspace object"
+          }
+        }
+      }
+    },
+    "/api/v1/findings/{id}/deliveries": {
+      "get": {
+        "operationId": "listDeliveries",
+        "description": "Requires findings:read. Pages contain 50 items in created_at/UUID order.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authorized result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid token"
+          },
+          "403": {
+            "description": "Insufficient scope"
+          },
+          "404": {
+            "description": "Absent or inaccessible workspace object"
+          }
+        }
+      }
+    }
+  }
+}

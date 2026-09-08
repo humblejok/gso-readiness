@@ -2,11 +2,12 @@
 
 ## 1. Document status
 
-- **Status:** Proposed implementation specification
+- **Status:** SaaS/white-label specification with an initial implementation in `hub/`; production acceptance remains subject to the release gates in section 24
+- **Revision:** 2 — 2026-09-07
 - **Target runtime:** Python 3.12 or newer
 - **Web framework:** Django 5.2 LTS, latest supported patch release
 - **API framework:** Django REST Framework
-- **Production database:** PostgreSQL 14 or newer
+- **Production database:** PostgreSQL 17 reference deployment; use a supported PostgreSQL release
 - **Development database:** SQLite
 - **Primary input:** Authoritative Graphify Review `review.json`, schema version `2.1`
 - **Jira target:** Jira Data Center/Server REST API v2
@@ -32,6 +33,10 @@ The application must:
 6. Expose findings and delivery state through an authenticated REST API and Django administration site.
 7. Optionally synchronize eligible findings to Jira using only standard Jira capabilities.
 8. Operate normally with no Jira connection.
+9. Isolate each customer organization, including uploads, reads, workers, integrations, exports and audit records.
+10. Provide verified user accounts, workspace memberships and an end-user dashboard.
+11. Support monthly/yearly hosted subscriptions and manually invoiced enterprise agreements without requiring billing configuration for local development.
+12. Support configurable white-label branding and dedicated enterprise deployments from the same codebase.
 
 ---
 
@@ -59,7 +64,8 @@ The application must:
 - Treating Jira status as proof that a source finding is resolved.
 - Parsing `REVIEW.md`; only machine-readable JSON is authoritative.
 - Supporting Jira Cloud in the first release. The Jira adapter boundary must allow it later.
-- A custom end-user dashboard. Django Admin and the REST API are sufficient for the MVP.
+- Customer-specific source forks, automatic remediation execution, and automatic provisioning of customer infrastructure.
+- Automatically issuing enterprise legal terms, choosing real prices, collecting live payments without operator configuration, or changing the existing AGPL license.
 
 ---
 
@@ -84,12 +90,12 @@ Disabling a previously configured Jira connection must preserve all existing fin
 The canonical finding key is:
 
 ```text
-(repository.external_id, finding.fingerprint)
+(organization.id, repository.external_id, finding.fingerprint)
 ```
 
 The fingerprint is the `sha256:...` value already present in a validated Graphify finding. The repository external ID must be stable across renames visible to users. Prefer an organization-assigned UUID or the canonical, normalized source-control repository URL.
 
-The database must enforce a unique constraint on this pair. The Jira association must reference the resulting internal finding UUID.
+The database must enforce unique `(organization, repository.external_id)` and `(repository, finding.fingerprint)` constraints. The Jira association must reference the resulting internal finding UUID. Neither an upload payload nor a display ID may select a tenant. API-token ownership establishes tenant context; browser access requires a verified user's membership in the workspace selected in the URL.
 
 ### 4.3 Two separate status domains
 
@@ -158,7 +164,7 @@ Graphify review kit / CI / developer workstation
 ## 6. Suggested Django project structure
 
 ```text
-finding-hub/
+hub/
 ├── manage.py
 ├── pyproject.toml
 ├── README.md
@@ -173,15 +179,23 @@ finding-hub/
 │   ├── urls.py
 │   ├── wsgi.py
 │   └── asgi.py
-└── apps/
-    ├── accounts/                 # API clients and authorization
-    ├── repositories/             # repository registry and bindings
-    ├── reviews/                  # import validation and immutable runs
-    ├── findings/                 # current finding state and observations
-    ├── remediation/              # coding-agent remediation plans
-    ├── deliveries/               # transactional outbox and attempts
-    ├── jira_adapter/             # optional Jira implementation
-    └── audit/                    # security and administrative audit events
+├── contracts/                   # vendored review/finding schemas; offline validation
+├── templates/                   # customer dashboard and account flows
+├── static/                      # local assets, no external frontend runtime
+├── tests/                       # SQLite and PostgreSQL acceptance tests
+└── hubapp/
+    ├── models.py                # tenant-owned domain records and control tables
+    ├── tenancy.py               # fail-closed query scope
+    ├── middleware.py            # membership/host boundaries
+    ├── services.py              # accounts, quotas, tokens and audit services
+    ├── contracts.py             # envelope validation and remediation rendering
+    ├── imports.py               # immutable imports and lifecycle reconciliation
+    ├── api.py                   # token API
+    ├── views.py                 # customer interface
+    ├── billing.py               # optional Stripe adapter
+    ├── jira.py                  # optional Jira adapter and worker processing
+    ├── migrations/              # schema, PostgreSQL RLS and reference guards
+    └── management/commands/     # delivery worker and operator maintenance
 ```
 
 Business rules must live in services/domain functions, not in serializers, views, model `save()` overrides, signals, or the Jira HTTP client. Django signals must not drive synchronization.
@@ -199,7 +213,7 @@ Content-Type: application/json
 Idempotency-Key: <repository-external-id>:<review-run-id>
 ```
 
-The endpoint accepts an envelope rather than modifying Graphify's authoritative `review.json` contract.
+The endpoint accepts an envelope rather than modifying Graphify's authoritative `review.json` contract. Envelope version `1.0` remains unchanged: there is no client-supplied tenant field. Idempotency keys are interpreted only within the authenticated token's organization. Tokens can additionally be restricted to a repository external ID.
 
 ### 7.2 Envelope example
 
@@ -414,9 +428,10 @@ All primary keys should be UUIDs. All models include `created_at` and `updated_a
 | Field | Type | Rules |
 |---|---|---|
 | `id` | UUID | Primary key |
-| `external_id` | string | Unique, immutable |
+| `organization` | foreign key | Required tenant owner |
+| `external_id` | string | Unique within organization, immutable |
 | `name` | string | Display value |
-| `clone_url` | URL/string | Normalized; unique when present |
+| `clone_url` | URL/string | Credential-free HTTPS metadata; not an identity or global uniqueness boundary |
 | `default_branch` | string | Defaults to `main` only when supplied or configured |
 | `active` | boolean | Default true |
 
@@ -503,12 +518,13 @@ Optional configuration representing one Jira instance.
 | Field | Type | Rules |
 |---|---|---|
 | `id` | UUID | Primary key |
-| `name` | string | Unique display/configuration key |
+| `organization` | foreign key | Required tenant owner |
+| `name` | string | Unique display/configuration key within organization |
 | `base_url` | HTTPS URL | No path credentials or URL user info |
 | `enabled` | boolean | Default false |
 | `auth_method` | enum | `pat`, optional `basic_legacy` |
-| `credential_reference` | string | Environment/secret-manager lookup key; never the secret |
-| `ca_bundle_path` | nullable string | Corporate CA file; certificate verification always enabled |
+| `encrypted_token` | encrypted text | SaaS customer-entered PAT encrypted with operator-injected Fernet keys; never exposed through read endpoints |
+| Corporate CA | operator setting | `JIRA_CA_BUNDLE`; never an arbitrary customer-supplied server filesystem path |
 | `request_timeout_seconds` | integer | Bounded default |
 | `host_allowlisted` | boolean/config result | Must pass outbound policy |
 
@@ -569,7 +585,7 @@ Constraints:
 
 ### 9.10 `ApiClient` and `AuditEvent`
 
-API tokens are shown once at creation and stored only as Django password hashes. Clients have explicit scopes such as `reviews:write`, `findings:read`, and `admin`.
+API tokens are shown once at creation and stored only as Django password hashes. Clients have an immutable organization owner, expiry, revocation state, optional repository restriction, and explicit `reviews:write` / `findings:read` scopes. Customer administrative actions use authenticated, CSRF-protected browser sessions and workspace roles, not a platform-wide `admin` ingestion scope.
 
 `AuditEvent` records authentication failures, import conflicts, configuration changes, manual retry/cancel actions, connection tests, and administrative erasure.
 
@@ -617,6 +633,8 @@ GET  /health/live
 GET  /health/ready
 ```
 
+Implementation note: the initial application exposes retry/cancel and Jira connection tests through CSRF-protected, role-checked workspace browser routes instead of administrative ingestion-token endpoints. The delivered read/import routes are documented in `hub/contracts/openapi.json`; the two administrative API routes above are reserved for a future separately scoped admin API.
+
 Finding list filters:
 
 - repository;
@@ -653,7 +671,7 @@ An enabled but invalid connection is a configuration error visible in administra
 
 Preferred Jira Data Center authentication is a personal access token belonging to a dedicated, least-privileged service account, sent as a bearer token. Basic authentication may be supported only behind an explicit legacy feature flag.
 
-Credentials must come from environment variables or an approved secret manager through `credential_reference`. They must never be stored in the database, source control, logs, task payloads or API responses.
+Customer-entered credentials are encrypted before database persistence. Encryption keys come only from `HUB_ENCRYPTION_KEYS` or operator secret injection, never the database. Plaintext PATs must never appear in source control, logs, task payloads, HTML or read API responses. The credential is write-only; `rotate_jira_secrets` supports key rotation. A future external secret-manager adapter may replace encrypted database storage without exposing arbitrary environment-variable lookup to tenants.
 
 Requirements:
 
@@ -662,7 +680,8 @@ Requirements:
 - optional corporate CA bundle;
 - no `verify=False`, trust-all callback, or insecure retry path;
 - no automatic cross-host redirects carrying authorization;
-- configurable outbound hostname allowlist to reduce SSRF risk.
+- mandatory operator-approved outbound hostname allowlist, validated DNS/IP policy, pinned destination address and original-host TLS verification to reduce SSRF/rebinding risk;
+- private addresses only for explicitly approved hosts in a dedicated deployment, never through the shared public service.
 
 The service account needs only the existing project permissions required to browse, create, edit, comment and optionally transition issues. It does not require Jira administrator permission or custom-field administration.
 
@@ -710,7 +729,7 @@ On successful creation, write an issue property when the Jira endpoint and permi
 }
 ```
 
-The property key is `graphify.finding.identity`. This does not require a custom field, but the implementation must not assume the property is searchable by JQL without a Jira plugin/index declaration.
+The property key is `graphify.finding.identity`. This does not require a custom field, but the implementation must not assume the property is searchable by JQL without a Jira plugin/index declaration. A tenant UUID must also be included in any external identity representation. The initial adapter uses the full tenant/repository/fingerprint description marker and collision-resistant label; issue-property writing is a future enhancement, not a dependency for synchronization.
 
 Also add:
 
@@ -767,7 +786,7 @@ Classify failures:
 - `5xx`, network timeout or temporary DNS failure: retryable;
 - Jira validation `400`: terminal until configuration or mapping changes.
 
-Use bounded connect and read timeouts. Suggested retry schedule with jitter: 1, 2, 5, 15 and 60 minutes, then every 6 hours up to the configured attempt/age limit. Operators can retry a terminal event after correcting configuration.
+Use bounded connect and read timeouts and bounded retry attempts. The initial worker uses exponential backoff capped at six hours plus jitter, respects bounded `Retry-After` delays up to 24 hours, permits eight automated attempts, and uses a ten-minute stale-processing lease. Superseded queued observations must not overwrite more recent default-branch observations. A failed or interrupted first creation must enter identity recovery before another create is possible. If no unique matching remote issue can be confirmed, require operator investigation instead of blindly creating another issue. Operators can retry terminal events after correcting configuration, but retries must preserve attempt history and recovery safeguards.
 
 Response bodies stored in logs or delivery attempts must be length-limited and sanitized.
 
@@ -781,9 +800,9 @@ The MVP may use a database-backed transactional outbox and a Django management c
 python manage.py process_delivery_outbox
 ```
 
-Production runs the web process and at least one separate worker process. PostgreSQL workers claim due events using row locks with skip-locked semantics. SQLite permits only one worker and uses a simplified claim path.
+Production runs the web process and at least one separate worker process. The initial PostgreSQL implementation serializes work per organization using row locks, persists an attempt before external work, and processes at most one event per workspace per sweep for fairness. A non-expired processing lease prevents another worker from overtaking that workspace. SQLite permits only one worker. Skip-locked worker claiming is a later throughput optimization, not required by the initial implementation.
 
-The worker must support graceful shutdown, stale-lock recovery, deduplication, bounded batches, per-host rate limits and correlation IDs.
+The worker must support graceful shutdown, stale-processing recovery, deduplication, bounded batches, and tenant/event correlation. Shared-host rate limiting and jitter remain release-hardening requirements; deployment-level egress controls are required before enabling large-scale integrations.
 
 Celery/Redis is not required for the MVP. The delivery service interface must allow replacing the management-command worker with Celery or another enterprise scheduler later without changing domain or Jira adapter code.
 
@@ -799,20 +818,20 @@ DJANGO_SECRET_KEY
 DJANGO_DEBUG=false
 DJANGO_ALLOWED_HOSTS
 DATABASE_URL                         # PostgreSQL production; SQLite development default
-FINDING_HUB_PUBLIC_URL               # optional link included in Jira
+HUB_PUBLIC_URL                       # canonical HTTPS origin in production
 OUTBOUND_INTEGRATIONS_ENABLED=false
-OUTBOUND_HOST_ALLOWLIST              # optional but recommended
+JIRA_ALLOWED_HOSTS                   # mandatory when Jira is enabled
 LOG_LEVEL=INFO
 ```
 
 Example optional Jira secret settings:
 
 ```text
-JIRA_CORPORATE_PAT=<secret>
-JIRA_CORPORATE_CA_BUNDLE=C:\path\to\corporate-ca.pem
+HUB_ENCRYPTION_KEYS=<fernet-key-newest-first>
+JIRA_CA_BUNDLE=C:\path\to\corporate-ca.pem
 ```
 
-The corresponding database connection stores `credential_reference=JIRA_CORPORATE_PAT`, not the token value.
+The corresponding database connection stores authenticated ciphertext, not a plaintext PAT. Customer forms cannot choose arbitrary environment keys or CA paths. See `hub/.env.example` for the executable configuration contract, including billing and deployment modes.
 
 Configuration precedence and validation must be documented. Production startup must fail for missing core Django/database secrets, but never because Jira is absent when outbound integration is disabled.
 
@@ -821,10 +840,10 @@ Configuration precedence and validation must be documented. Production startup m
 ## 15. Security requirements
 
 - Terminate TLS at the application or a trusted reverse proxy.
-- Require authentication for every endpoint except health endpoints.
+- Require authentication for customer data and administrative endpoints. Account onboarding/recovery and legal pages are public by design; billing webhooks require provider signatures rather than a user session. Health endpoints reveal only bounded status.
 - Store inbound API tokens only as password hashes and rotate them.
 - Apply least-privilege scopes and Django Admin permissions.
-- Keep Jira credentials in environment/secret storage and redact headers.
+- Keep Jira credentials encrypted with keys injected separately, and redact headers.
 - Validate all schemas, enums, lengths and relationships server-side.
 - Escape Jira markup and Django HTML output.
 - Apply request body, rate and pagination limits.
@@ -958,7 +977,7 @@ SQLite is for local development and fast unit tests only. It must not be present
 
 ## 20. Delivery phases
 
-### Phase 1 — Registry without Jira
+### Phase 1 — Tenant registry and customer interface without Jira
 
 - Django project and environment configuration.
 - PostgreSQL/SQLite support and migrations.
@@ -968,11 +987,13 @@ SQLite is for local development and fast unit tests only. It must not be present
 - Idempotent import and lifecycle reconciliation.
 - Read API, OpenAPI and Django Admin.
 - Jira explicitly disabled.
+- Verified accounts, invitations, roles, workspace selection, customer dashboard and upload/token workflows.
+- Fail-closed tenant scope and PostgreSQL row security/reference guards.
 
 ### Phase 2 — Optional Jira adapter
 
 - Jira connection and repository project binding.
-- External secret reference and corporate CA support.
+- Tenant-encrypted credentials and operator corporate CA support.
 - Transactional outbox and worker.
 - Jira create/update, managed comments and association recovery.
 - Optional transition mappings.
@@ -985,13 +1006,17 @@ SQLite is for local development and fast unit tests only. It must not be present
 - Rate limiting and stale-lock recovery.
 - Backup/restore and lost-association recovery exercise.
 - Threat-model review and deployment documentation.
+- Subscription entitlements, monthly/yearly provider prices, signed webhook reconciliation, manual enterprise agreements and read-only grace/expiry behavior.
+- White-label configuration, DNS domain ownership workflow and dedicated deployment documentation.
+- Cross-tenant tests for browser, API, workers, billing and streaming exports.
 
 ### Deferred extensions
 
 - Jira Cloud adapter.
 - Other work-item adapters.
 - OIDC/mTLS inbound authentication.
-- User-facing dashboard.
+- Customer-side outbound Jira connector; use dedicated hosting for private Jira in the initial release.
+- Enterprise SSO/MFA integration, delegated reseller hierarchy, and automatic custom-domain certificate provisioning.
 - Jira webhooks or polling for workflow divergence.
 - Celery or an enterprise queue implementation.
 
@@ -1017,6 +1042,11 @@ The first production release is acceptable only when:
 14. SQLite provides a documented one-process/one-worker development experience.
 15. Strengths, rejected candidates and unverified intermediate candidates cannot create Jira work under the default policy.
 16. All required unit, API, integration, migration, security and PostgreSQL tests pass.
+17. An unrelated user, token or worker cannot read or mutate another customer's data, including through raw SQL using the runtime role.
+18. Billing events cannot activate a different organization or restore stale entitlements, and duplicate events are idempotent.
+19. Expiry/downgrade never silently deletes customer findings; documented export/erasure paths remain available.
+20. Branding changes cannot alter legal notices, authorize cross-workspace access, or activate unverified domains.
+21. The operator has completed the launch checklist in `hub/README.md`, including real provider/network tests, restore testing and commercial/legal configuration.
 
 ---
 
@@ -1049,3 +1079,51 @@ These decisions are safe defaults but must be confirmed before production deploy
 - [Updating Jira issues through the REST API](https://developer.atlassian.com/server/jira/platform/updating-an-issue-via-the-jira-rest-apis-6848604/)
 - [Jira Data Center entity properties and JQL indexing limitation](https://developer.atlassian.com/server/jira/platform/entity-properties/)
 - [Atlassian Data Center personal access tokens](https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html)
+
+---
+
+## 24. Hosted SaaS and white-label product requirements
+
+### 24.1 Organization and identity model
+
+An organization is a tenant and subscription boundary, including for an individual subscriber. One verified account can hold memberships in several organizations. Membership roles are `owner`, `admin`, `reviewer`, and `viewer`; billing permission is independent except that owners always have billing access. Account identity and tenant authorization must not be conflated. Django platform staff privileges do not imply customer workspace membership.
+
+Tenant-owned records include repositories, imports, findings, observations/remediations, invitations, service accounts, subscriptions, Jira connections/bindings/associations, outbox events, delivery attempts and audit records. The database control tables needed for login/token routing and provider-event routing have narrowly scoped unfiltered lookup paths. Domain data uses fail-closed managers and PostgreSQL FORCE RLS. No privileged/superuser/BYPASSRLS connection may serve production requests. Cross-tenant relationships must be rejected even when both IDs are otherwise valid.
+
+Database connections use session tenant settings with explicit cleanup and no persistent connection reuse by default. Transaction-mode external connection pooling is unsupported until tenant context is set transaction-locally on every transaction. Never infer tenant identity from arbitrary request headers. Custom domains are presentation/routing boundaries and never replace membership authorization.
+
+### 24.2 Customer journeys
+
+1. Register, confirm email, sign in, reset credentials, and create or join a workspace.
+2. Invite colleagues using expiring single-use invitations bound to verified email; owners control administrator invitations.
+3. Create expiring, revocable, shown-once API tokens or upload an import envelope in the browser.
+4. Inspect findings by severity/lifecycle/search, review evidence and coding-agent remediation, and compare immutable observations.
+5. Configure optional Jira credentials/bindings and inspect/retry delivery failures without changing technical finding state.
+6. Inspect plan/usage, subscribe or use a manual enterprise agreement, manage/cancel through a billing portal, and retain read/export access after expiry.
+7. Export source imports and request privileged erasure with an auditable cooling-off workflow.
+
+The customer dashboard is a first-release requirement. Django Admin is restricted to platform operations. The application never runs Graphify, Copilot, scanners, uploaded commands or remediation scripts on the server.
+
+### 24.3 Billing and entitlements
+
+One subscription belongs to one organization. Pricing is operator-controlled: individual and team plans may use monthly or yearly Stripe Price IDs; enterprise agreements use annual manual invoicing/activation, with setup/support fees negotiated separately. Example quotas are implementation defaults, not advertised contractual promises or market-tested prices. Do not charge by finding count.
+
+Entitlements are enforced server-side, including in API imports. The initial limits cover repository count, members including pending invitations, calendar-month imports and payload storage. Store subscription plan/status, current entitlement end, bounded failed-payment grace period and provider identifiers. Serialize quota-consuming writes per organization to prevent concurrent allowance bypass. Default trials expire after 14 days; failed payments may receive seven days of read/write grace. No payment configuration is needed for local development.
+
+Stripe checkout/portal require real operator configuration. Do not accept customer-supplied prices or customer IDs. Verify signatures over raw webhook bytes, deduplicate provider event IDs, and reconcile current provider subscription state rather than applying stale payloads in delivery order. Schedule periodic reconciliation for missed webhooks. Confirming a checkout redirect never grants access. Cancellation/expiry makes the workspace read-only; it does not delete records. Repository/member overages block new additions but preserve existing data. Grace must not extend on every retry.
+
+Retention durations listed in plans are proposed policy parameters, not an automatic deletion schedule in the initial application. Before offering paid retention guarantees, implement or operate an approved archival/deletion procedure that preserves required finding continuity and handles backups. Erasure requires a tenant request, operator identity, a seven-day cooling-off period and exact tenant confirmation; it must never automatically delete external Jira issues or shared user accounts.
+
+### 24.4 Editions, domains and licensing boundaries
+
+Use one build for standard shared SaaS, branded organizations and dedicated/customer-hosted deployments. Enterprise branding supports display name, colors and an HTTPS logo. Custom domains require a random DNS TXT ownership challenge, operator verification, an ingress certificate, explicit allowed-host configuration and host-only session cookies. DNS verification alone is not TLS provisioning. Changes invalidate prior verification. Prevent domain reuse while already assigned to another verified customer.
+
+Private Jira instances use dedicated deployment/network access in the initial release; shared SaaS cannot proxy arbitrary corporate destinations. A customer-side outbound connector is an explicitly deferred alternative. No customer-specific branches, secrets in source, or automatic infrastructure purchases are required.
+
+Keep `hub/` in this repository with its own dependencies, tests, migrations, releases and container build. The `.github` kit installer must not distribute or provision the application. The AGPL-3.0-only license remains unchanged and applies to the new original application material. Preserve De Jonckheere Stéphane (humblejok) attribution and provide a corresponding-source link for each hosted release. White labeling changes product appearance, not legal notices. A proprietary/dual-license edition requires a separate rights and contract review; this implementation neither introduces such a license nor revokes existing grants.
+
+### 24.5 Production gates and explicitly unfinished enterprise extensions
+
+The initial application is a development/pilot implementation, not evidence that a commercial service is production-ready. Require PostgreSQL CI using a non-superuser role, API/browser isolation tests, signed billing-event tests, corporate Jira/TLS/network integration tests, dependency/static/secret scans, restore/rollback exercises, and an operator threat-model review before paid public launch. Bound request sizes/rates at the reverse proxy and configure SMTP, encryption keys, canonical origin and source URL.
+
+Before promising an enterprise feature, validate its actual implementation and operating model. Native enterprise SSO/MFA, reseller hierarchies, an outbound customer-side Jira connector, automatic domain/TLS provisioning, storage archival/retention automation, advanced metrics/alert routing, and full Jira lost-association/operator recovery tooling remain follow-on work. A dedicated enterprise deployment may use an organization-approved identity-aware ingress; this must not be described as native Hub SSO/MFA. No live Stripe/Jira account or public deployment is created by this repository change.

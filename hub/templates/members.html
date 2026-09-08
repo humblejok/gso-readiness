@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Members</h1>
+<div class="panel form-panel"><h2>Invite a member</h2><form method="post">{% csrf_token %}{{ form.as_p }}<button>Send invitation</button></form></div>
+<div class="table-wrap"><table><tr><th>Email</th><th>Role</th><th>Action</th></tr>
+{% for member in members %}<tr><td>{{ member.user.email }}</td><td>{{ member.role }}{% if member.billing_access %}<small>Billing access</small>{% endif %}</td><td>
+{% if member.role != 'owner' %}
+<form method="post">{% csrf_token %}<button class="quiet" name="remove" value="{{ member.pk }}">Remove access</button></form>
+{% if request.membership.role == 'owner' %}
+<details><summary>Edit permissions</summary><form method="post">{% csrf_token %}<input type="hidden" name="update_member" value="{{ member.pk }}"><p><label>Role<select name="role"><option value="viewer"{% if member.role == 'viewer' %} selected{% endif %}>Viewer</option><option value="reviewer"{% if member.role == 'reviewer' %} selected{% endif %}>Reviewer</option><option value="admin"{% if member.role == 'admin' %} selected{% endif %}>Administrator</option></select></label></p><p><label><input type="checkbox" name="billing_access"{% if member.billing_access %} checked{% endif %}> Allow billing management</label></p><button>Save permissions</button></form></details>
+<details><summary>Transfer ownership</summary><form method="post">{% csrf_token %}<input type="hidden" name="transfer_owner" value="{{ member.pk }}"><p>This member becomes owner and you become an administrator.</p><p><label>Type the workspace name<input name="confirm_workspace" required></label></p><button>Transfer ownership</button></form></details>
+{% endif %}{% endif %}</td></tr>{% endfor %}</table></div>
+<h2>Pending invitations</h2>{% for invite in invitations %}<p>{{ invite.email }} · {{ invite.role }} · Expires {{ invite.expires_at }}</p>{% empty %}<p class="muted">No pending invitations.</p>{% endfor %}
+{% endblock %}
