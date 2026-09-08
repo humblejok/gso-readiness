@@ -98,16 +98,20 @@ def write_new_json(path: Path, data: Any) -> None:
         stream.write(encoded)
 
 
-def prepare(args: argparse.Namespace) -> dict:
+def preparation_request(args: argparse.Namespace) -> dict:
     from import_contract import text
+    from review_settings import load_settings
 
+    settings = load_settings(Path(args.repository))
+    saved = settings["project"]
     path = Path(args.review).resolve()
     if path.is_dir():
         path /= "review.json"
     review, checksum, context = load_review(path)
     source = source_metadata(review, context, args.source_commit, args.source_branch)
-    name = args.repository_name or review["review"]["repository"].get("name")
-    repository = {"external_id": args.repository_id, "name": name, "default_branch": args.default_branch}
+    name = args.repository_name or saved.get("repository_name") or review["review"]["repository"].get("name")
+    repository = {"external_id": args.repository_id or saved.get("repository_id"), "name": name,
+                  "default_branch": args.default_branch or saved.get("default_branch")}
     if not all(text(repository[key], limit) for key, limit in (("external_id", 500), ("name", 200), ("default_branch", 200))):
         raise ExportError("Supply a stable repository ID, repository name and default branch.")
     if args.clone_url:
@@ -129,17 +133,23 @@ def prepare(args: argparse.Namespace) -> dict:
         "repository": repository, "source": source,
         "run_id": review["run"]["run_id"], "required_findings": review["findings"],
         "warnings": warnings,
+        "hub_url": settings["user"].get("hub_url"),
     }
+    return request
+
+
+def prepare(args: argparse.Namespace) -> dict:
+    request = preparation_request(args)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     directory = Path(args.output_directory).resolve() if args.output_directory else KIT_ROOT / "output" / "exports" / f"{stamp}-{uuid.uuid4().hex[:8]}"
     directory.mkdir(parents=True, exist_ok=False)
     request_path = directory / "export-request.json"
     write_new_json(request_path, request)
-    if not review["findings"]:
+    if not request["required_findings"]:
         write_new_json(directory / "remediations.json", [])
     return {
         "status": "prepared", "request": str(request_path), "remediations": str(directory / "remediations.json"),
-        "required_plan_count": len(review["findings"]), "warnings": warnings,
+        "required_plan_count": len(request["required_findings"]), "warnings": request["warnings"],
     }
 
 
@@ -170,29 +180,89 @@ def build(args: argparse.Namespace) -> dict:
     write_new_json(output, envelope)
     return {
         "status": "exported", "envelope": str(output), "idempotency_key": key,
+        "run_id": review["run"]["run_id"],
         "payload_sha256": "sha256:" + digest(envelope), "review_sha256": checksum,
         "remediation_count": len(plans), "warnings": request.get("warnings", []),
+        "hub_url": request.get("hub_url"),
     }
+
+
+def ensure(args: argparse.Namespace) -> dict:
+    """Resume a run-local export or verify it is current, without replacing any envelope."""
+    from import_contract import digest, validate_envelope
+    from review_settings import load_settings
+
+    if args.if_hub_configured and not load_settings(Path(args.repository))["user"].get("hub_url"):
+        return {"status": "not_configured", "message": "No Hub configured; automatic local export is not required. Nothing was uploaded."}
+    expected = preparation_request(args)
+    directory = Path(args.output_directory).resolve() if args.output_directory else Path(expected["review_path"]).parent / "hub"
+    request_path = directory / "export-request.json"
+    output = directory / "import-envelope.json"
+    if directory.exists():
+        if not request_path.is_file():
+            raise ExportError("Export directory exists without its source-bound request. Do not overwrite it; select a new export directory explicitly.")
+        stored, _ = read_json(request_path)
+        fields = ("schema_version", "review_path", "review_sha256", "repository", "source", "run_id", "required_findings")
+        if not isinstance(stored, dict) or any(stored.get(field) != expected[field] for field in fields):
+            raise ExportError("Existing export belongs to a different or changed review/project. It was not updated. Use the new run's own hub directory; never overwrite a baseline envelope.")
+    else:
+        options = argparse.Namespace(**vars(args))
+        options.output_directory = str(directory)
+        prepare(options)
+    if output.exists():
+        envelope, _ = read_json(output)
+        review, checksum, _ = load_review(Path(expected["review_path"]))
+        key = f"{expected['repository']['external_id']}:{expected['run_id']}"
+        validate_envelope(envelope, key, KIT_ROOT / "schema")
+        if (checksum != expected["review_sha256"] or envelope["review"] != review
+                or envelope["repository"] != expected["repository"] or envelope["source"] != expected["source"]):
+            raise ExportError("Existing envelope is stale or belongs to another review/project. Nothing was overwritten; do not publish it for this run.")
+        if args.remediations:
+            plans, _ = read_json(Path(args.remediations))
+            if plans != envelope["remediations"]:
+                raise ExportError("An envelope already exists with different remediation plans. Reuse the original unchanged; do not replace published history.")
+        return {
+            "status": "exported", "reused": True, "envelope": str(output), "run_id": expected["run_id"],
+            "idempotency_key": key, "review_sha256": checksum, "payload_sha256": "sha256:" + digest(envelope),
+            "remediation_count": len(envelope["remediations"]), "warnings": expected["warnings"],
+            "hub_url": expected["hub_url"],
+        }
+    plans_path = Path(args.remediations).resolve() if args.remediations else directory / "remediations.json"
+    if not plans_path.exists() and not expected["required_findings"] and not args.remediations:
+        write_new_json(plans_path, [])
+    if not plans_path.exists():
+        return {
+            "status": "needs_remediations", "request": str(request_path), "remediations": str(plans_path),
+            "run_id": expected["run_id"], "review_sha256": expected["review_sha256"],
+            "required_plan_count": len(expected["required_findings"]), "warnings": expected["warnings"],
+            "message": "The review exists but its Hub envelope is not ready. Generate source-bound plans for this run, then rerun ensure. Nothing was uploaded.",
+        }
+    return build(argparse.Namespace(request=str(request_path), remediations=str(plans_path)))
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
-    preparation = commands.add_parser("prepare", help="Read a historical run and produce a remediation request")
+    preparation = argparse.ArgumentParser(add_help=False)
     preparation.add_argument("--review", required=True, help="Explicit review.json or run directory; never auto-select latest")
-    preparation.add_argument("--repository-id", required=True)
+    preparation.add_argument("--repository", default=".", help="Project whose saved defaults should be used")
+    preparation.add_argument("--repository-id", help="Overrides saved project repository ID")
     preparation.add_argument("--repository-name")
-    preparation.add_argument("--default-branch", required=True)
+    preparation.add_argument("--default-branch", help="Overrides saved project default branch (never historical source branch)")
     preparation.add_argument("--clone-url")
     preparation.add_argument("--source-commit", help="Original revision, only to fill missing metadata; conflicts are rejected")
     preparation.add_argument("--source-branch", help="Original branch, only to fill missing metadata; conflicts are rejected")
-    preparation.add_argument("--output-directory", help="New directory; existing directories are rejected")
+    preparation.add_argument("--output-directory", help="Export directory: prepare requires a new one; ensure can resume/verify a matching one")
+    commands.add_parser("prepare", parents=[preparation], help="Read a historical run and produce a remediation request")
+    ensuring = commands.add_parser("ensure", parents=[preparation], help="Create/resume a run-local hub export, or verify and reuse its matching envelope")
+    ensuring.add_argument("--remediations", help="Optional source-bound plans; an existing envelope cannot be replaced")
+    ensuring.add_argument("--if-hub-configured", action="store_true", help="Skip automatic local export when no user Hub URL is configured")
     building = commands.add_parser("build", help="Validate plans and write the import envelope without uploading")
     building.add_argument("--request", required=True)
     building.add_argument("--remediations", help="JSON array of plans; defaults to remediations.json beside the request")
     args = parser.parse_args(argv)
     try:
-        result = prepare(args) if args.action == "prepare" else build(args)
+        result = {"prepare": prepare, "build": build, "ensure": ensure}[args.action](args)
     except ImportError:
         print(json.dumps({"status": "blocked", "error": "Export dependencies are missing. Run bootstrap_environment.py --first-call --json (or install the kit requirements in its dedicated environment)."}), file=sys.stderr)
         return 2
@@ -206,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"status": "blocked", "error": message}), file=sys.stderr)
         return 2
     print(json.dumps(result, ensure_ascii=True, sort_keys=True))
-    return 0
+    return 3 if result["status"] == "needs_remediations" else 0
 
 
 if __name__ == "__main__":

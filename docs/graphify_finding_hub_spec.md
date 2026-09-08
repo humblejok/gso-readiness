@@ -359,10 +359,18 @@ An `Idempotency-Key` header is required and must agree with the repository/run i
 
 ### 7.6 Import response
 
+For a configured Hub, the kit's full-review workflow includes a required offline export completion step after successful validation for fresh, revalidate and rescore modes. `export_review.py ensure` creates/resumes the selected run's adjacent `hub/` directory or verifies an existing envelope against the exact review, project identity and source revision. It never mutates a prior envelope. Missing current-run remediation plans produce an explicit incomplete status (exit 3), not a claimed success; blockers remain visible. `/export-review ... resume=true` recovers interrupted packaging. The publishing workflow reuses that matching envelope rather than regenerating plans for an already finalized run. Zero supported findings still produce a valid envelope with complete reconciliation and an empty plans array. This does not authorize automatic publication or skip baseline-import requirements.
+
+The review kit also provides `/publish-review review=<previous-run>` (export then publish) and `/publish-review envelope=<existing-envelope>`. It uses the saved user Hub URL and a destination-bound workspace token from native OS credential storage or a secret-manager environment. Publication is explicit, locally validated, TLS-verified and redirect-free. The server creates a missing repository in the authenticated workspace as part of the atomic import; no separate project provisioning endpoint or elevated scope is needed. Accounts/workspaces are not provisioned by this command. Replays reuse the identical envelope/idempotency key, never regenerated remediation plans. The client writes a local receipt and can provide a workspace link.
+
+`organization_id` and `repository_created` are optional additive response fields (older stored results may omit them). `repository_created` describes the original transaction: a `200` replay returns that stored result but creates nothing during the replay. Clients must use the HTTP status to distinguish replay and avoid claiming a new project was created again.
+
 ```json
 {
   "import_id": "a6eb924f-4060-4e8c-a9a4-93eaebda7bfd",
   "repository_id": "f1e43e22-fdb4-4a1e-adcf-e6427628eaf6",
+  "organization_id": "bdedb5c7-a30d-41c0-b9fc-55ee5ea8bd9e",
+  "repository_created": true,
   "run_id": "20260906-example",
   "created_findings": 3,
   "updated_findings": 4,

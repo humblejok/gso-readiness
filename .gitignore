@@ -1,5 +1,7 @@
 *.pyc
 __pycache__/
+.github/graphify-review/settings.json.bak-*
+.github/graphify-review/.settings-*
 .finding-hub-venv/
 hub/.env
 hub/*.sqlite3

@@ -8,17 +8,19 @@ import sys
 from pathlib import Path
 
 from profile_core import DEFAULT_PROFILES_DIR, ProfileError, resolve_profile
+from review_settings import load_settings
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--profile", default="generic", help="profile id/alias, generic, or auto")
+    parser.add_argument("--profile", help="profile id/alias; defaults to saved profile, then generic")
     parser.add_argument("--repository", default=".")
     parser.add_argument("--profiles-dir", default=str(DEFAULT_PROFILES_DIR))
     parser.add_argument("--output")
     args = parser.parse_args()
     try:
-        result = resolve_profile(args.profile, args.repository, args.profiles_dir)
+        selected = args.profile or load_settings(Path(args.repository))["project"]["profile"]
+        result = resolve_profile(selected, args.repository, args.profiles_dir)
     except (OSError, ValueError, ProfileError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -37,4 +39,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

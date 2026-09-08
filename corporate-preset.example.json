@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "project": {
+    "profile": "auto",
+    "security_scanner": "auto"
+  },
+  "user": {
+    "hub_url": "https://hub.example.invalid",
+    "jfrog_server_id": "corp-xray",
+    "jfrog_url": "https://artifactory.example.invalid",
+    "proxy_url": "http://proxy.example.invalid:8080",
+    "no_proxy": "localhost,127.0.0.1",
+    "pip_index_url": "https://artifactory.example.invalid/artifactory/api/pypi/REPLACE_ME/simple"
+  },
+  "installer": {
+    "github_bundle_url": "https://artifactory.example.invalid/artifactory/REPLACE_ME/graphify-review-github.zip",
+    "github_bundle_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "truststore_url": "https://artifactory.example.invalid/artifactory/REPLACE_ME/cacerts",
+    "truststore_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "truststore_type": "JKS",
+    "jfrog_cli": {
+      "windows-amd64": {
+        "url": "https://artifactory.example.invalid/artifactory/REPLACE_ME/jf-windows-amd64.exe",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "darwin-arm64": {
+        "url": "https://artifactory.example.invalid/artifactory/REPLACE_ME/jf-darwin-arm64",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "darwin-amd64": {
+        "url": "https://artifactory.example.invalid/artifactory/REPLACE_ME/jf-darwin-amd64",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "linux-amd64": {
+        "url": "https://artifactory.example.invalid/artifactory/REPLACE_ME/jf-linux-amd64",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "linux-arm64": {
+        "url": "https://artifactory.example.invalid/artifactory/REPLACE_ME/jf-linux-arm64",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    }
+  }
+}

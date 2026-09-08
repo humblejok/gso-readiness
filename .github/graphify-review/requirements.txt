@@ -4,3 +4,5 @@ graphifyy==0.9.46
 # Offline validation of Finding Hub export envelopes (also pinned by the Hub).
 jsonschema==4.26.0
 referencing==0.37.0
+# Optional Hub publishing uses only native OS credential backends, never plaintext files.
+keyring==25.7.0

@@ -6,6 +6,93 @@ Copyright © 2026 De Jonckheere Stéphane (humblejok). Licensed under [GNU AGPL-
 
 An evidence-first production-readiness workflow for VS Code, GitHub Copilot agents, and Graphify. The runtime kit lives under `.github/`; the repository-root Windows and macOS/Linux installers are distribution helpers. The authoritative output is JSON and the companion `REVIEW.md` is generated for people.
 
+## Guided setup (recommended)
+
+You need Python 3.10+, VS Code with Copilot installed/signed in, and the project folder you want reviewed. This repository distributes a Copilot command kit, not a separately installed VS Code extension. You do not need to install or host Finding Hub to run reviews.
+
+**Already have the `.github` kit?** Open the project in VS Code and run:
+
+```text
+/setup-review
+```
+
+The assistant asks for the project name, stable repository ID, default branch and profile, then any optional JFrog, Finding Hub and corporate-network settings. It detects existing JFrog server IDs and explains missing prerequisites. Credentials are never requested in chat. First-use review commands offer this setup flow when project settings are incomplete. If you decline, existing explicit-argument workflows remain available.
+
+**Installing for the first time?** Ask your administrator for an approved local `company.json` preset, then run one command from the folder containing the installer:
+
+```powershell
+.\install-graphify-review.ps1 -TargetRepository 'C:\Projects\orders-api' -Preset '.\company.json'
+```
+
+```bash
+python3 install-graphify-review-unix.py --target-repository '/path/to/orders-api' --preset './company.json'
+```
+
+The installers verify downloads and launch the same terminal wizard after installation. Without a preset, they ask for the approved kit URL and checksum when run interactively; your administrator should supply these. Use `-SkipSetup` / `--skip-setup` to defer the wizard until `/setup-review`. Automated installation uses `-NonInteractive` / `--non-interactive` and explicit parameters or a preset; it never waits for wizard answers. Presets fill missing saved values, while explicit installer options override preset download settings. A Java truststore download is optional: omit both its URL and checksum if it is unnecessary. Optional JFrog downloads are selected for the current OS/architecture.
+
+### Change settings or diagnose a problem
+
+```text
+/configure-review
+/configure-review hub-url=https://hub.company.example
+/configure-review jfrog-server=corp-xray
+/doctor-review
+/doctor-review network=true
+```
+
+`/configure-review` lets you view/change/clear settings without editing JSON. `/doctor-review` performs local checks and explains next steps; `network=true` explicitly adds Artifactory ping and an unauthenticated Hub health check. It never runs audits, installs tools, modifies settings or uploads a report. A successful ping does not establish Xray licensing, a completed security audit, or Copilot authentication. Semgrep still needs an approved repository rule configuration.
+
+After setup, repeat arguments are no longer necessary:
+
+```text
+/full-project-review graph=artifacts/graph.json
+/check-vulnerability-upgrades severity=critical,high
+/update-vulnerable-dependencies severity=critical,high
+/export-review review=.github/graphify-review/output/runs/<run-id>/review.json
+```
+
+These commands use saved defaults unless explicitly overridden. Export still uses the historical source commit/branch, never today's checkout or the configured default branch. Saving a Hub URL never enables automatic transmission. To send a result explicitly, use [`/publish-review`](#publish-results-to-the-configured-hub); manual browser upload remains available without an API token.
+
+### Where information is stored
+
+| Location | Contents |
+|---|---|
+| `.github/graphify-review/settings.json` | Shareable project ID/name/default branch, profile, scanner choice and optional Artifactory repository keys |
+| Windows: `%LOCALAPPDATA%\GraphifyReview\settings.json` | User connection and machine settings |
+| macOS: `~/Library/Application Support/GraphifyReview/settings.json` | User connection and machine settings |
+| Linux: `${XDG_CONFIG_HOME:-~/.config}/graphify-review/settings.json` | User connection and machine settings |
+
+Commit project settings to share the repository ID and satisfy strict clean-worktree review checks. Never generate a different ID for the same project on each machine. User files remain outside Git; keep them private even though tokens/passwords are forbidden. Modified settings files get timestamped backups; identical saves do nothing. Installers preserve existing project settings and never copy the publisher's project identity from a downloaded bundle. Changing a setting does not change `policy.yaml` or weaken review gates.
+
+Explicit command options override saved defaults. Configured user network values override inherited environment values **inside review child processes only**; unspecified values retain the inherited environment. The mapping is: `proxy_url` → both cases of HTTP(S)_PROXY; `no_proxy` → both cases of NO_PROXY; `ca_bundle` → PIP_CERT, REQUESTS_CA_BUNDLE and SSL_CERT_FILE; `pip_index_url` → PIP_INDEX_URL; `jfrog_server_id` → JFROG_CLI_SERVER_ID; `jfrog_cli_path` adds its parent to the child PATH. A configured Java truststore replaces only the trustStore/trustStoreType options in child MAVEN_OPTS, preserving unrelated options. Clearing a setting restores inherited behavior; it does not erase OS environment variables previously installed by an administrator or installer. The setup wizard itself does not write OS environment variables or shell profiles. Legacy installer PATH/MAVEN_OPTS behavior is retained when its optional tool/truststore artifacts are installed.
+
+To create/update JFrog authentication, run this **in your own terminal**, not inside an agent tool or chat:
+
+```text
+python .github/graphify-review/scripts/setup_review.py jfrog-login --repository .
+```
+
+Use `python3` where appropriate. It invokes the native [JFrog configuration prompts](https://docs.jfrog.com/integrations/docs/jf-config-add); authentication stays in JFrog's existing credential store. Keep TLS verification enabled. Merely saving a new JFrog URL does not reconfigure an existing CLI server: use this helper, then `/doctor-review network=true`. Optional Hub publishing has its own terminal login below; Hub tokens never go in settings, presets or chat.
+
+### Administrator presets and unattended configuration
+
+Start from [corporate-preset.example.json](corporate-preset.example.json). Replace every placeholder URL/checksum, remove unused optional integrations/downloads, and distribute the preset through an approved trusted channel alongside the installers. Download hashes protect artifacts only if the preset itself is trusted. Neither installer fetches or executes a preset. Do not put tokens, passwords, arbitrary environment variables, executable commands, or a single shared repository ID for unrelated projects in it. `installer.jfrog_cli` is a platform map (`windows-amd64`, `windows-arm64`, `darwin-amd64`, `darwin-arm64`, `linux-amd64`, `linux-arm64`), with each entry containing `url` and `sha256`. Provide a supported binary for the machines you manage or rely on an existing CLI installation.
+
+User settings may include absolute `ca_bundle` (PEM), `java_truststore` (Java cacerts), and `jfrog_cli_path` paths; these are machine-specific. Installed truststore/CLI paths become wizard defaults. Certificate trust for the initial download must already exist: Windows uses its certificate store; Unix accepts `--ca-bundle`. A downloaded Java truststore cannot bootstrap the trust needed to download itself. Proxy authentication, Maven repository/proxy settings.xml, and organization-approved Semgrep rules remain administrator responsibilities; HTTP_PROXY alone does not configure Maven's repository proxy settings.
+
+The standard-library CLI works before the dedicated virtual environment exists:
+
+```text
+python .github/graphify-review/scripts/setup_review.py configure --repository .
+python .github/graphify-review/scripts/setup_review.py configure --repository . --preset company.json --non-interactive
+python .github/graphify-review/scripts/setup_review.py configure --repository . --non-interactive --set user.hub_url=https://hub.company.example
+python .github/graphify-review/scripts/setup_review.py configure --repository . --non-interactive --unset user.proxy_url
+python .github/graphify-review/scripts/setup_review.py show --repository .
+python .github/graphify-review/scripts/setup_review.py doctor --repository . --network
+```
+
+Use `--set project.<key>=<value>` for project changes; `--set project.artifactory_repositories=repo-a,repo-b` accepts a comma-separated list. `--user-settings <absolute-file>` is available on the setup CLI for isolated/portable configuration and tests; normal review commands use the OS-specific user location above. Diagnostics exit `1` when attention is required; invalid settings/cancelled setup exit `2`. If installation succeeds but setup fails, the installed kit and backups remain: correct the issue and rerun `/setup-review`.
+
 ## Optional Finding Hub web application
 
 The separate [Django Finding Hub](hub/README.md) in `hub/` provides customer workspaces, review uploads, findings/remediation history, scoped API tokens, optional Jira delivery, configurable subscriptions and enterprise branding. It supports PostgreSQL for hosting and SQLite for development. The existing kit installers do not install the Hub or change its database.
@@ -194,7 +281,7 @@ After installation, activate the environment in a Bash/Zsh terminal:
 
 Use the printed path if you selected a different install root. Fully quit all VS Code instances, then launch from that terminal with `code '/path/to/my-api'`. This ensures Copilot inherits the variables; launching from Finder, the Dock, or a desktop shortcut may not inherit shell settings. The installer cannot update its parent terminal's environment.
 
-For a corporate proxy, use Python's normal proxy discovery (including `https_proxy`/`no_proxy`) or pass `--proxy 'http://proxy.example.invalid:8080'` with the real proxy host. For a private CA, add `--ca-bundle '/path/to/corporate-ca.pem'`. This must be an already trusted **PEM certificate bundle** for the HTTPS connection; the downloaded Java `cacerts` is a different format and cannot bootstrap its own download. TLS verification stays enabled. The installer configures neither Maven repository/proxy settings nor Python package-index settings; retain your existing corporate configuration for those tools.
+For a corporate proxy, use Python's normal proxy discovery (including `https_proxy`/`no_proxy`) or pass `--proxy 'http://proxy.example.invalid:8080'` with the real proxy host. For a private CA, add `--ca-bundle '/path/to/corporate-ca.pem'`. This must be an already trusted **PEM certificate bundle** for the HTTPS connection; the downloaded Java `cacerts` is a different format and cannot bootstrap its own download. TLS verification stays enabled. The post-install wizard can save an internal Python package index for review child processes. Maven repository/proxy settings remain in your existing corporate Maven configuration.
 
 The review runtime remains `.graphify-review-venv`. It is bootstrapped manually or on the first Copilot command, as described below; an application's `.venv` is not modified by this installer.
 
@@ -415,7 +502,7 @@ For ASP.NET Core, JFrog runs NuGet SCA from each detected solution/project root.
 
 JFrog can replace Gitleaks only when the connected platform includes the JFrog Advanced Security Secrets scanner and the configured identity may use it. If that sub-scan is absent or fails, `auto` runs Gitleaks and records both attempts; strict `jfrog` mode leaves `secret_scan` incomplete. JFrog does not replace the repository-configured Semgrep SAST step, so `static_security_scan` remains incomplete until `.semgrep.yml` or `.semgrep.yaml` exists and `semgrep` is available.
 
-The application SDK/package manager must also be available to JFrog, and dependencies/build descriptors must be resolvable through the corporate repositories. For Maven/Gradle behind a proxy, set `JFROG_CLI_RELEASES_REPO=<server-id>/<repository-name>` to an approved Artifactory remote repository that proxies `https://releases.jfrog.io`; JFrog uses it to obtain the required extractor resources. No JFrog credentials or raw detected secret values are written to review evidence.
+The application SDK/package manager must also be available to JFrog, and dependencies/build descriptors must be resolvable through the corporate repositories. For Maven/Gradle behind a proxy, configure `user.jfrog_releases_repo=<server-id>/<repository-name>` with `/configure-review` (or set `JFROG_CLI_RELEASES_REPO` yourself) to an approved Artifactory remote repository that proxies `https://releases.jfrog.io`; JFrog uses it to obtain the required extractor resources. No JFrog credentials or raw detected secret values are written to review evidence.
 
 You can smoke-test the two .NET scans directly from the solution directory:
 
@@ -425,6 +512,76 @@ jf audit --secrets --format=simple-json --fail=false
 ```
 
 The first command must include `scaScanStatusCode: 0`; the second must include `secretsScanStatusCode: 0`. Findings are allowed—the status code establishes that the scanner completed.
+
+## Publish results to the configured Hub
+
+Use `/publish-review` to send a completed review and its remediation plans. The Hub automatically creates the project (called a **repository** internally) if its stable repository ID does not exist in the authenticated workspace. Subsequent runs use that same project. You do not have to create the project manually.
+
+When a Hub URL is configured, `/full-project-review` now includes local envelope preparation after successful validation for **fresh, revalidate and rescore** runs. Each run has its own `<run-dir>/hub/import-envelope.json`, including that run's complete reconciliation and source-bound remediation plans. Earlier envelopes are never overwritten. The final response explicitly reports Hub export readiness or the blocker; missing metadata/plans must not be mistaken for a ready envelope. No token or reachable Hub is needed for this local step, and nothing is uploaded automatically.
+
+To complete an older/interrupted revalidation export, select the **new revalidation run**, not its baseline:
+
+```text
+/export-review review=.github/graphify-review/output/runs/<new-run-id>/review.json resume=true
+```
+
+This resumes or verifies that run's `hub/` export. It rejects stale/mismatched artifacts without replacing them. If all supported findings were resolved, it still builds an envelope with an empty remediation array and the explicit resolution reconciliation. Publishing requires the baseline history to exist in the Hub first.
+
+### One-time connection
+
+1. Run `/configure-review hub-url=https://hub.company.example` (or set the URL during installation/setup). For local development, `http://127.0.0.1:8000` is allowed.
+2. Sign in to that Hub in your browser, choose or create your workspace, and open **API tokens** (workspace owner/admin only). Create a token with `reviews:write`, or ask your workspace administrator to provision one through your approved secret-sharing channel. If you restrict it to a repository, enter the exact stable ID saved during `/setup-review`. The kit does not create accounts or workspaces.
+3. Bootstrap the dedicated environment if needed, then save the token through the hidden prompt in your **own terminal**, not Copilot chat:
+
+Windows PowerShell:
+
+```powershell
+py -3 .github/graphify-review/scripts/bootstrap_environment.py
+.graphify-review-venv\Scripts\python.exe .github/graphify-review/scripts/publish_review.py login
+```
+
+macOS/Linux:
+
+```sh
+python3 .github/graphify-review/scripts/bootstrap_environment.py
+.graphify-review-venv/bin/python .github/graphify-review/scripts/publish_review.py login
+```
+
+Login saves a token locally; it does not contact the Hub or prove its permissions. Authentication is checked when publishing. The helper uses [keyring's native OS backends](https://keyring.readthedocs.io/en/latest/): macOS Keychain, Windows Credential Locker, or Linux Secret Service. Linux requires an unlocked desktop keyring and D-Bus session. There is no plaintext-file fallback. One token is saved per canonical Hub URL; log in again to switch workspace tokens or rotate an expired token. Changing the Hub URL never forwards the old token to the new destination.
+
+### Publish from Copilot
+
+Select a completed run explicitly; the command verifies/reuses its run-local envelope, or completes it when necessary without regenerating an already finalized envelope:
+
+```text
+/publish-review review=.github/graphify-review/output/runs/<run-id>/review.json
+```
+
+Or send an envelope you already exported:
+
+```text
+/publish-review envelope=.github/graphify-review/output/exports/<export-id>/import-envelope.json
+```
+
+Add `dry-run=true` to export/validate and display the destination without reading credentials or making a network request. The command uses saved project metadata; export options such as `repository-id`, `default-branch` and `remediations` apply only with `review`, not with an immutable existing envelope. Missing historical metadata or useful remediation context must be supplied before publishing. `REVIEW.md` and vulnerability-only reports are not accepted full-review inputs.
+
+The command displays the destination and project identity before sending the complete envelope. Check findings/evidence for sensitive information before sharing; contract validation cannot guarantee prose contains no secrets. Publishing is always explicit: setup, reviews and `/export-review` never upload automatically. The response identifies a new import versus an already imported run, includes finding counts and (on updated Hub servers) project-creation status and a workspace link. A new `publish-receipt-*.json` is saved beside the unchanged envelope. Existing project Jira bindings can queue deliveries; importing does not enable Jira or guarantee delivery.
+
+For a timeout, connection failure or server error, retry using **the exact same envelope**, not `review=` with regenerated plans. Exact retries return the original import without duplicates. A `409` means that repository/run already has different content; do not change its run ID to bypass the conflict. New reviews use new run IDs and the same repository ID. Revalidation requires its baseline history to have been imported; missing findings alone are never marked resolved. Token scope, repository restrictions, workspace subscription/quotas and archived-project protections still apply.
+
+### Terminal publishing and troubleshooting
+
+```sh
+.graphify-review-venv/bin/python .github/graphify-review/scripts/publish_review.py publish --envelope path/to/import-envelope.json --dry-run
+.graphify-review-venv/bin/python .github/graphify-review/scripts/publish_review.py publish --envelope path/to/import-envelope.json
+.graphify-review-venv/bin/python .github/graphify-review/scripts/publish_review.py logout
+```
+
+On Windows substitute `.graphify-review-venv\Scripts\python.exe`. Run from the reviewed project root, or pass `--repository <project-root>`. Logout removes only the local token for the currently configured Hub; revoke it in the Hub to invalidate other copies. Existing browser uploads remain an option if native credential storage is unavailable.
+
+For headless/CI use, an approved secret manager can inject `FINDING_HUB_TOKEN` and **matching** `FINDING_HUB_TOKEN_URL` into the process environment. Both are required together; this overrides a saved OS credential. No `--token` argument, credential URL, preset token or committed environment file is supported. Do not paste a token assignment into chat or shell history. To return to native credential storage, remove both injected variables.
+
+Publishing uses the saved proxy, `NO_PROXY` and approved PEM CA bundle. Java `cacerts` is not a PEM bundle. TLS verification remains enabled and redirects are refused, even within the same host; configure the final Hub base URL. Authentication failures require token replacement, while `403` may also mean missing scope, repository restriction, an inactive workspace or a quota. Server errors are sanitized; ask your Hub operator to investigate server logs rather than enabling credential-bearing HTTP debug output.
 
 ## Export a previous review to Finding Hub
 
@@ -437,7 +594,9 @@ Use the Copilot slash command with an explicit final review or run directory:
 
 The command reads the original schema-2.1 `review.json`, generates proposed coding-agent remediation plans for every supported/partially-supported finding unless a plans file was supplied, and writes a validated `import-envelope.json` in a new `.github/graphify-review/output/exports/<export-id>/` directory. Upload that file through Finding Hub's **Import review** screen. It does not upload anything, require Hub/Jira credentials, rerun Graphify/Xray/tests, rescore, or edit the reviewed project. A Markdown report or vulnerability-command `check.json`/`apply.json` is not a full review and cannot be exported through this command.
 
-`repository-id` must remain stable across runs and machines. The repository name defaults to the name in the original review; supply `repository-name` when missing. `default-branch` is required and may differ from the reviewed branch. Optional `clone-url` must be credential-free HTTPS. Optional `output` must name a new directory. Paths and values containing spaces must be quoted.
+Add `resume=true` to safely create/complete/verify the selected run's adjacent `hub/` directory instead (or an explicit `output`). The deterministic entry point for orchestration is `export_review.py ensure --review <run-dir>/review.json` using the dedicated review Python and its offline validator dependencies. `--if-hub-configured` skips automatic exports when no user Hub URL is saved. Exit 0 means `exported` or `not_configured` (inspect status), exit 3 means `needs_remediations`, and exit 2 means blocked. A pending request is not an import envelope. After the export agent supplies grounded plans, rerun `ensure` to build and verify; rerunning against a matching finished envelope is read-only. This validates the export contract, not the original review's policy/evidence again.
+
+`repository-id` must remain stable across runs and machines. Repository ID/name/default branch use saved project settings unless explicitly overridden; the name falls back to the original review when no name is configured. Supply any values still missing, or run `/setup-review`. The default branch may differ from the reviewed source branch. Optional `clone-url` must be credential-free HTTPS. Optional `output` must name a new directory. Paths and values containing spaces must be quoted.
 
 Source metadata comes from the original review or matching `run-context.json`, never current HEAD. Only when the original metadata is missing, supply `source-commit=<original-sha>` and/or `source-branch=<original-branch>`. Conflicting metadata is rejected. The review is embedded unchanged, including fingerprints, scores, source snapshot and revalidation reconciliation. If the original run included uncommitted changes, the exporter warns that its commit alone does not reproduce the reviewed source.
 

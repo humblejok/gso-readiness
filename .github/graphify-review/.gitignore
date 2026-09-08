@@ -1,0 +1,3 @@
+# Share settings.json, but keep local backups and atomic-save files out of Git.
+settings.json.bak-*
+.settings-*

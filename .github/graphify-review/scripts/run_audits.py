@@ -15,6 +15,7 @@ from typing import Any
 
 from profile_core import load_resolved_profile, matches_pattern
 from reproducibility import review_input_files
+from review_settings import SettingsError, apply_process_environment
 
 PREREQUISITE_PATTERNS = re.compile(
     r"(assets file .* not found|nuget source .* does not exist|unable to load the service index|"
@@ -774,10 +775,16 @@ def main() -> int:
     parser.add_argument("--repository", default=".")
     parser.add_argument("--profile-file", required=True)
     parser.add_argument("--timeout", type=int, default=300)
-    parser.add_argument("--security-scanner", choices=sorted(SECURITY_SCANNERS), default="auto")
+    parser.add_argument("--security-scanner", choices=sorted(SECURITY_SCANNERS))
     parser.add_argument("--jfrog-server-id", help="Configured JFrog CLI server ID; credentials are never accepted here")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
+    try:
+        settings = apply_process_environment(Path(args.repository).resolve())
+    except SettingsError:
+        print("Invalid saved settings. Run /configure-review or /doctor-review; no audits were started.")
+        return 2
+    args.security_scanner = args.security_scanner or settings["project"]["security_scanner"]
     resolved = load_resolved_profile(args.profile_file)
     results = run_audits(
         Path(args.repository).resolve(), resolved, args.timeout, args.security_scanner, args.jfrog_server_id,

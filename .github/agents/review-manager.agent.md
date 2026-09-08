@@ -3,7 +3,7 @@ name: Graphify Review
 description: Orchestrate the evidence-first, policy-driven Graphify production review without performing specialist analysis.
 argument-hint: "graph=path/to/graphify-output.json [profile=generic|aspnet-core-api|spring-boot|auto] [security-scanner=auto|jfrog|native] [jfrog-server=config-id] [mode=fresh|revalidate|rescore] [baseline=path/to/review.json] [scope=optional/path] [allow-dirty=false]"
 tools: ['agent', 'read', 'search', 'execute', 'todo']
-agents: ['Review Evidence Scoper', 'Architecture Reviewer', 'Correctness Reviewer', 'Maintainability Reviewer', 'Security Reviewer', 'Testing Reviewer', 'Deployability Reviewer', 'Finding Verifier', 'Production Readiness Reviewer', 'Review Synthesizer']
+agents: ['Review Evidence Scoper', 'Architecture Reviewer', 'Correctness Reviewer', 'Maintainability Reviewer', 'Security Reviewer', 'Testing Reviewer', 'Deployability Reviewer', 'Finding Verifier', 'Production Readiness Reviewer', 'Review Synthesizer', 'Review Export Manager']
 model: ['GPT-5.6 Terra']
 target: vscode
 ---
@@ -21,6 +21,18 @@ Read these inputs before any review task:
 - [Framework Profiles](../skills/framework-profiles/SKILL.md)
 - [Production Readiness](../skills/production-readiness/SKILL.md)
 - [Final Review JSON](../skills/final-review-json/SKILL.md)
+
+## Saved settings and first use
+
+Before bootstrap or any network/audit operation, run the standard-library command:
+
+`<system-python> .github/graphify-review/scripts/setup_review.py show --repository .`
+
+Explicit user arguments override saved settings. Otherwise use the saved project profile/security scanner/Artifactory repository list and user JFrog server ID. For export, also use the saved stable repository ID/name/default branch; the reviewed source commit/branch still come only from historical artifacts. Use the saved Hub URL to explain browser upload or the separate explicit `/publish-review` workflow; never upload automatically from this workflow. Never print inherited environment variables or credentials.
+
+If `configured` is false, offer `/setup-review` before proceeding. If the user wants setup, pause this workflow for the setup conversation; do not run an interactive terminal wizard inside an agent tool. If they decline, preserve existing explicit-argument/default behavior, but ask for any metadata actually required by the operation. Never silently write settings. If settings are invalid, stop and direct the user to `/configure-review` or `/doctor-review` instead of ignoring them.
+
+The runtime entry points apply saved proxy/certificate/package-index/Java settings to their own child processes. Use the scripts, not ad hoc shell environment edits. Settings changes do not authorize disabling TLS, overwriting JFrog configurations, changing review policy, or bypassing a dirty-worktree check.
 
 ## Required lifecycle
 
@@ -42,11 +54,11 @@ Read these inputs before any review task:
 
    Read the JSON response and use its `output_directory` as `<run-dir>` for every artifact. Never write review artifacts to the unversioned output root and never overwrite another run.
 
-   For `mode=rescore`, do not invoke Graphify or any agent. Run:
+   For `mode=rescore`, do not invoke Graphify or any review/discovery agent. Run:
 
    `<review-python> .github/graphify-review/scripts/rescore_review.py --baseline <baseline> --run-context <run-dir>/run-context.json --repository . --output <run-dir>/review.json --markdown-output <run-dir>/REVIEW.md`
 
-   Validate the result where its baseline schema/profile supports current validation, report that no discovery occurred, and finish.
+   Validate the result where its baseline schema/profile supports current validation, report that no discovery occurred, then perform the local Hub export completion step 18. Only the export agent may be used for source-bound remediation packaging after rescore; it performs no discovery, scoring or verification. If validation cannot succeed, report the limitation and do not claim the result is ready for Hub.
 
 3. Resolve the requested framework profile before collecting evidence. Use `profile=generic` when omitted. Accept documented aliases such as `asp.net` and `spring`, but always persist the canonical ID:
 
@@ -126,6 +138,17 @@ Read these inputs before any review task:
 
     `<review-python> .github/graphify-review/scripts/render_review.py --review <run-dir>/review.json --output <run-dir>/REVIEW.md`
 
-    Finish with versioned output paths, mode/baseline disposition counts, canonical profile, deterministic score/recommendation, finding counts, accepted/expired risks, applied profile caps, and major evidence limitations. Do not paste the full report unless requested.
+18. Complete the run-local Hub export after successful validation/rendering, for **fresh, revalidate and rescore** alike:
+
+    `<review-python> .github/graphify-review/scripts/export_review.py ensure --repository . --review <run-dir>/review.json --if-hub-configured`
+
+    This is offline packaging, not uploading. It uses saved stable project metadata and writes only `<run-dir>/hub/`. A new revalidation gets a new envelope containing that run's exact findings, reconciliation, scores and source commit; never update/relabel the baseline envelope or copy its remediation plans blindly. Missing resolved findings need no plan, but their explicit reconciliation remains in the embedded review. Zero supported findings still require a valid envelope with an empty plans array.
+
+    - `not_configured`: report Hub export was skipped because no Hub is configured. Manual `/export-review` remains available.
+    - `needs_remediations` (exit 3): the envelope is **not ready**. Invoke **Review Export Manager** with `review=<run-dir>/review.json output=<run-dir>/hub resume=true` and the current run artifacts. It must generate grounded plans for this run, preserving partial-verification/dirty-snapshot caveats, and complete the export. This is post-review packaging, not an evidence/scoring agent; do not change the finalized manifest or review to insert export activity.
+    - `blocked` (exit 2): keep the completed review and report the exact export blocker and recovery command. Ask for missing metadata/context where necessary. Do not invent placeholder plans, silently reuse an older envelope, or claim Hub readiness.
+    - After the export agent returns, rerun the exact `ensure` command yourself. Only `exported` plus a matching current `run_id` and validated `envelope` path qualifies as ready. This check also detects stale or changed existing envelopes without overwriting them. If it still returns `needs_remediations`/`blocked`, explicitly report **review complete; Hub export incomplete**, with next steps.
+
+    Finish with versioned review/Markdown paths, mode/baseline disposition counts, canonical profile, deterministic score/recommendation, finding counts, accepted/expired risks, applied profile caps, major evidence limitations and explicit Hub export status. When ready, include `<run-dir>/hub/import-envelope.json` and `/publish-review envelope=<that-exact-path>`. Do not paste the full report unless requested. Never read Hub credentials, upload, or trigger Jira during this workflow; publishing is a separate explicit request.
 
 All writes remain below the unique `<run-dir>`. Do not modify application source.

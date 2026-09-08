@@ -49,10 +49,10 @@ param(
     [string]$GithubBundleSha256 = 'REPLACE_WITH_64_CHARACTER_SHA256',
 
     [Parameter()]
-    [string]$TrustStoreUrl = 'https://artifactory.example.invalid/artifactory/REPLACE_ME/cacerts',
+    [string]$TrustStoreUrl = '',
 
     [Parameter()]
-    [string]$TrustStoreSha256 = 'REPLACE_WITH_64_CHARACTER_SHA256',
+    [string]$TrustStoreSha256 = '',
 
     [Parameter()]
     [ValidateSet('', 'JKS', 'PKCS12')]
@@ -77,7 +77,16 @@ param(
     [string]$Proxy = '',
 
     [Parameter()]
-    [switch]$ProxyUseDefaultCredentials
+    [switch]$ProxyUseDefaultCredentials,
+
+    [Parameter()]
+    [string]$Preset = '',
+
+    [Parameter()]
+    [switch]$NonInteractive,
+
+    [Parameter()]
+    [switch]$SkipSetup
 )
 
 Set-StrictMode -Version Latest
@@ -323,6 +332,54 @@ function Add-UserPathEntry {
 if ($env:OS -ne 'Windows_NT') {
     throw 'This installer supports Windows only.'
 }
+if ($Preset) {
+    if ((Get-Item -LiteralPath $Preset).Length -gt 131072) { throw 'Preset exceeds 128 KiB.' }
+    $presetData = Get-Content -LiteralPath $Preset -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($presetData.schema_version -ne '1.0') { throw 'Expected preset schema_version 1.0.' }
+    foreach ($field in $presetData.PSObject.Properties.Name) {
+        if ($field -notin @('schema_version', 'installer', 'project', 'user')) { throw 'Unknown preset section.' }
+    }
+    $presetInstaller = $presetData.PSObject.Properties['installer']
+    $parameterMap = @{
+        github_bundle_url = 'GithubBundleUrl'; github_bundle_sha256 = 'GithubBundleSha256'
+        truststore_url = 'TrustStoreUrl'; truststore_sha256 = 'TrustStoreSha256'; truststore_type = 'TrustStoreType'
+    }
+    if ($presetInstaller) {
+        foreach ($field in $presetInstaller.Value.PSObject.Properties) {
+            if ($field.Name -eq 'jfrog_cli') { continue }
+            if (-not $parameterMap.ContainsKey($field.Name)) { throw 'Unknown installer preset field.' }
+            if ($field.Value -isnot [string]) { throw 'Installer preset values must be strings.' }
+            $parameterName = $parameterMap[$field.Name]
+            if (-not $PSBoundParameters.ContainsKey($parameterName)) {
+                Set-Variable -Name $parameterName -Value $field.Value
+            }
+        }
+        $artifacts = $presetInstaller.Value.PSObject.Properties['jfrog_cli']
+        if ($artifacts) {
+            $platformKey = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'windows-arm64' } else { 'windows-amd64' }
+            $artifact = $artifacts.Value.PSObject.Properties[$platformKey]
+            if ($artifact) {
+                if (-not $PSBoundParameters.ContainsKey('JfrogCliUrl')) { $JfrogCliUrl = [string]$artifact.Value.url }
+                if (-not $PSBoundParameters.ContainsKey('JfrogCliSha256')) { $JfrogCliSha256 = [string]$artifact.Value.sha256 }
+            }
+        }
+    }
+    $presetUser = $presetData.PSObject.Properties['user']
+    if ($presetUser -and -not $PSBoundParameters.ContainsKey('Proxy')) {
+        $proxyField = $presetUser.Value.PSObject.Properties['proxy_url']
+        if ($proxyField) { $Proxy = [string]$proxyField.Value }
+    }
+}
+if ($GithubBundleSha256 -eq 'REPLACE_WITH_64_CHARACTER_SHA256' -and -not $NonInteractive) {
+    Write-Host 'Ask your administrator for the approved kit URL/checksum, or restart with -Preset company.json.'
+    $GithubBundleUrl = Read-Host 'Kit ZIP HTTPS URL'
+    $GithubBundleSha256 = Read-Host 'Approved SHA-256'
+}
+if ($TrustStoreType -notin @('', 'JKS', 'PKCS12')) { throw 'Truststore type must be JKS or PKCS12.' }
+$installTrustStore = (-not [string]::IsNullOrWhiteSpace($TrustStoreUrl))
+if ($installTrustStore -ne (-not [string]::IsNullOrWhiteSpace($TrustStoreSha256))) {
+    throw 'Supply both truststore URL and SHA-256, or omit both when Java trust configuration is not needed.'
+}
 if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
     throw 'LOCALAPPDATA is not available for the current Windows user.'
 }
@@ -367,11 +424,13 @@ try {
         -Uri $GithubBundleUrl `
         -ExpectedSha256 $GithubBundleSha256 `
         -Destination $bundlePath
-    Invoke-VerifiedDownload `
-        -Name 'Java truststore' `
-        -Uri $TrustStoreUrl `
-        -ExpectedSha256 $TrustStoreSha256 `
-        -Destination $downloadedTrustStore
+    if ($installTrustStore) {
+        Invoke-VerifiedDownload `
+            -Name 'Java truststore' `
+            -Uri $TrustStoreUrl `
+            -ExpectedSha256 $TrustStoreSha256 `
+            -Destination $downloadedTrustStore
+    }
     if ($installJfrog) {
         Invoke-VerifiedDownload `
             -Name 'JFrog CLI' `
@@ -417,21 +476,30 @@ try {
         Copy-Item -LiteralPath $destinationGithub -Destination $backupDirectory -Recurse -Force
     }
 
-    New-Item -ItemType Directory -Path $trustStoreDirectory -Force | Out-Null
-    if (Test-Path -LiteralPath $installedTrustStore -PathType Leaf) {
-        $installedHash = (Get-FileHash -LiteralPath $installedTrustStore -Algorithm SHA256).Hash
-        if (-not $installedHash.Equals($TrustStoreSha256, [StringComparison]::OrdinalIgnoreCase)) {
-            $trustStoreBackup = "$installedTrustStore.$backupSuffix.bak"
-            Copy-Item -LiteralPath $installedTrustStore -Destination $trustStoreBackup -Force
+    if ($installTrustStore) {
+        New-Item -ItemType Directory -Path $trustStoreDirectory -Force | Out-Null
+        if (Test-Path -LiteralPath $installedTrustStore -PathType Leaf) {
+            $installedHash = (Get-FileHash -LiteralPath $installedTrustStore -Algorithm SHA256).Hash
+            if (-not $installedHash.Equals($TrustStoreSha256, [StringComparison]::OrdinalIgnoreCase)) {
+                $trustStoreBackup = "$installedTrustStore.$backupSuffix.bak"
+                Copy-Item -LiteralPath $installedTrustStore -Destination $trustStoreBackup -Force
+            }
         }
+        Copy-Item -LiteralPath $downloadedTrustStore -Destination $installedTrustStore -Force
     }
-    Copy-Item -LiteralPath $downloadedTrustStore -Destination $installedTrustStore -Force
 
     New-Item -ItemType Directory -Path $destinationGithub -Force | Out-Null
-    Get-ChildItem -LiteralPath $sourceGithub -Force |
-        Copy-Item -Destination $destinationGithub -Recurse -Force
+    Get-ChildItem -LiteralPath $sourceGithub -Recurse -File -Force | ForEach-Object {
+        $relative = $_.FullName.Substring($sourceGithub.Length).TrimStart([char[]]'\/')
+        $normalized = $relative.Replace('\', '/')
+        if ($normalized -ne 'graphify-review/settings.json' -and -not $normalized.StartsWith('graphify-review/settings.json.bak-')) {
+            $destination = Join-Path $destinationGithub $relative
+            New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+            Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
+        }
+    }
 
-    Set-MavenTrustStore -TrustStorePath $installedTrustStore -StoreType $TrustStoreType
+    if ($installTrustStore) { Set-MavenTrustStore -TrustStorePath $installedTrustStore -StoreType $TrustStoreType }
 
     if ($installJfrog) {
         New-Item -ItemType Directory -Path $binDirectory -Force | Out-Null
@@ -452,8 +520,10 @@ try {
     Write-Host ''
     Write-Host 'Graphify Review installation completed.' -ForegroundColor Green
     Write-Host "Repository kit: $destinationGithub"
-    Write-Host "Java truststore: $installedTrustStore"
-    Write-Host 'User MAVEN_OPTS now points Maven at the installed truststore.'
+    if ($installTrustStore) {
+        Write-Host "Java truststore: $installedTrustStore"
+        Write-Host 'User MAVEN_OPTS now points Maven at the installed truststore.'
+    }
     if ($backupDirectory) {
         Write-Host "Previous .github backup: $backupDirectory"
     }
@@ -468,6 +538,29 @@ try {
     }
     Write-Host ''
     Write-Host 'Close every VS Code window and start VS Code again so Copilot inherits the updated user environment.' -ForegroundColor Yellow
+    $setupScript = Join-Path $destinationGithub 'graphify-review\scripts\setup_review.py'
+    if (-not $SkipSetup -and (Test-Path -LiteralPath $setupScript -PathType Leaf)) {
+        $python = Get-Command py -ErrorAction SilentlyContinue
+        $pythonPrefix = @('-3')
+        if (-not $python) {
+            $python = Get-Command python -ErrorAction SilentlyContinue
+            $pythonPrefix = @()
+        }
+        if ($python) {
+            $setupArguments = @($setupScript, 'configure', '--repository', $target, '--installed-root', $resolvedInstallRoot)
+            if ($Preset) { $setupArguments += @('--preset', [IO.Path]::GetFullPath($Preset)) }
+            if ($Proxy) { $setupArguments += @('--default', "user.proxy_url=$Proxy") }
+            if ($TrustStoreType) { $setupArguments += @('--default', "user.java_truststore_type=$TrustStoreType") }
+            if ($NonInteractive) { $setupArguments += '--non-interactive' }
+            & $python.Source @pythonPrefix @setupArguments
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning 'Kit installed, but setup needs attention. Run /setup-review to finish; installed files and backups are retained.'
+                exit $LASTEXITCODE
+            }
+        }
+        else { Write-Warning 'Install Python 3.10+ or ask your administrator, then run /setup-review. The kit is installed.' }
+    }
+    else { Write-Host 'Run /setup-review in Copilot when ready to configure the project.' }
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {

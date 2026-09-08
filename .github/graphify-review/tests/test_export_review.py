@@ -60,6 +60,144 @@ class ExportReviewTests(unittest.TestCase):
             (self.output / "remediations.json").write_text(json.dumps(plans), encoding="utf-8")
         return self.invoke(["build", "--request", str(self.output / "export-request.json")])
 
+    def ensure(self, extra=(), hub=True):
+        settings = {"project": {"repository_id": "repo:orders", "repository_name": "Orders API", "default_branch": "main"},
+                    "user": {"hub_url": "https://hub.example.invalid"} if hub else {}}
+        with mock.patch("review_settings.load_settings", return_value=settings):
+            return self.invoke(["ensure", "--review", str(self.path), "--repository", str(self.root), *extra])
+
+    def test_ensure_completes_and_reuses_current_run_without_rewriting(self):
+        code, result = self.ensure()
+        self.assertEqual(code, 3)
+        self.assertEqual(result["status"], "needs_remediations")
+        request_path = Path(result["request"])
+        self.assertEqual(request_path.parent, (self.path.parent / "hub").resolve())
+        original_request = request_path.read_bytes()
+        self.assertEqual(self.ensure()[1]["request"], str(request_path))
+        Path(result["remediations"]).write_text(json.dumps(self.plans()), encoding="utf-8")
+        code, result = self.ensure()
+        self.assertEqual(code, 0, result)
+        original_envelope = Path(result["envelope"]).read_bytes()
+        code, reused = self.ensure()
+        self.assertEqual(code, 0, reused)
+        self.assertTrue(reused["reused"])
+        self.assertEqual(reused["run_id"], self.review["run"]["run_id"])
+        self.assertEqual(request_path.read_bytes(), original_request)
+        self.assertEqual(Path(result["envelope"]).read_bytes(), original_envelope)
+
+    def test_ensure_new_revalidation_preserves_baseline_and_current_reconciliation(self):
+        _, pending = self.ensure()
+        Path(pending["remediations"]).write_text(json.dumps(self.plans()), encoding="utf-8")
+        _, baseline_result = self.ensure()
+        baseline_path = Path(baseline_result["envelope"])
+        original = baseline_path.read_bytes()
+        baseline_finding = self.review["findings"].pop(0)
+        self.path = self.root / "revalidated run" / "review.json"
+        self.path.parent.mkdir()
+        self.review["run"].update(run_id="revalidated-run", mode="revalidate", finding_reconciliation=[{
+            "baseline_id": baseline_finding["id"], "baseline_fingerprint": baseline_finding["fingerprint"],
+            "status": "resolved", "rationale": "The targeted configuration was fixed and rechecked.",
+            "evidence": [{"type": "source", "path": "settings.py"}],
+        }])
+        self.review["review"]["repository"]["commit_sha"] = "a" * 40
+        self.save_review()
+        code, pending = self.ensure()
+        self.assertEqual(code, 3)
+        self.assertEqual(pending["required_plan_count"], 1)
+        Path(pending["remediations"]).write_text(json.dumps(self.plans()), encoding="utf-8")
+        code, current = self.ensure()
+        self.assertEqual(code, 0, current)
+        envelope, _ = exporter.read_json(Path(current["envelope"]))
+        self.assertEqual(envelope["review"], self.review)
+        self.assertEqual(envelope["source"]["commit_sha"], "a" * 40)
+        self.assertEqual(envelope["remediations"][0]["generated_from_commit"], "a" * 40)
+        self.assertNotEqual(current["idempotency_key"], baseline_result["idempotency_key"])
+        self.assertEqual(baseline_path.read_bytes(), original)
+        code, blocked = self.ensure(("--output-directory", str(baseline_path.parent)))
+        self.assertEqual(code, 2)
+        self.assertIn("different or changed", blocked["error"])
+        self.assertEqual(baseline_path.read_bytes(), original)
+
+    def test_ensure_zero_supported_findings_builds_for_every_mode(self):
+        self.review["findings"] = []
+        for mode in ("fresh", "revalidate", "rescore"):
+            self.path = self.root / mode / "review.json"
+            self.path.parent.mkdir()
+            self.review["run"].update(run_id=mode, mode=mode)
+            self.save_review()
+            code, result = self.ensure()
+            self.assertEqual(code, 0, result)
+            envelope, _ = exporter.read_json(Path(result["envelope"]))
+            self.assertEqual(envelope["remediations"], [])
+            self.assertEqual(envelope["review"], self.review)
+
+    def test_ensure_rejects_changed_review_even_with_same_run_id(self):
+        self.ensure()
+        self.review["findings"][0]["description"] += " Updated evidence."
+        self.save_review()
+        code, result = self.ensure()
+        self.assertEqual(code, 2)
+        self.assertIn("different or changed", result["error"])
+        self.assertFalse((self.path.parent / "hub/import-envelope.json").exists())
+
+    def test_ensure_rejects_stale_envelope_and_conflicting_supplied_plans(self):
+        _, pending = self.ensure()
+        plans_path = Path(pending["remediations"])
+        plans_path.write_text(json.dumps(self.plans()), encoding="utf-8")
+        _, result = self.ensure()
+        output = Path(result["envelope"])
+        original = output.read_bytes()
+        changed = self.plans()
+        changed[0]["objective"] += " A different proposal."
+        plans_path.write_text(json.dumps(changed), encoding="utf-8")
+        self.assertEqual(self.ensure(("--remediations", str(plans_path)))[0], 2)
+        self.assertEqual(output.read_bytes(), original)
+        envelope = json.loads(original)
+        envelope["review"]["findings"][0]["description"] += " Stale report."
+        output.write_text(json.dumps(envelope), encoding="utf-8")
+        code, blocked = self.ensure()
+        self.assertEqual(code, 2)
+        self.assertIn("stale", blocked["error"])
+
+    def test_ensure_skips_only_when_automatic_export_has_no_hub(self):
+        code, result = self.ensure(("--if-hub-configured",), hub=False)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["status"], "not_configured")
+        self.assertFalse((self.path.parent / "hub").exists())
+        self.assertEqual(self.ensure(hub=False)[0], 3)  # Explicit local export needs no Hub.
+
+    def test_ensure_rejects_unknown_existing_directory_without_writes(self):
+        directory = self.path.parent / "hub"
+        directory.mkdir()
+        marker = directory / "unrelated.json"
+        marker.write_text("{}", encoding="utf-8")
+        code, result = self.ensure()
+        self.assertEqual(code, 2)
+        self.assertIn("without its source-bound request", result["error"])
+        self.assertEqual(list(directory.iterdir()), [marker])
+
+    def test_ensure_missing_metadata_or_invalid_plans_never_claim_ready(self):
+        with mock.patch("review_settings.load_settings", return_value={"project": {}, "user": {"hub_url": "https://hub.example.invalid"}}):
+            code, blocked = self.invoke(["ensure", "--review", str(self.path), "--if-hub-configured"])
+        self.assertEqual(code, 2)
+        self.assertIn("stable repository ID", blocked["error"])
+        self.assertFalse((self.path.parent / "hub").exists())
+        _, pending = self.ensure()
+        Path(pending["remediations"]).write_text("[]", encoding="utf-8")
+        code, blocked = self.ensure()
+        self.assertEqual(code, 2)
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertFalse((self.path.parent / "hub/import-envelope.json").exists())
+
+    def test_review_and_publish_workflows_require_run_local_completion(self):
+        manager = (ROOT / ".github/agents/review-manager.agent.md").read_text()
+        publishing = (ROOT / ".github/agents/review-publish-manager.agent.md").read_text()
+        exporting = (ROOT / ".github/agents/review-export-manager.agent.md").read_text()
+        for required in ("'Review Export Manager'", "export_review.py ensure", "--if-hub-configured", "fresh, revalidate and rescore", "review complete; Hub export incomplete", "resume=true"):
+            self.assertIn(required, manager)
+        self.assertIn("resume=true", publishing)
+        self.assertIn("replace `prepare` with `ensure`", exporting)
+
     def test_export_preserves_review_and_is_accepted_by_hub_contract(self):
         self.review["findings"][0]["description"] += " Stéphane — 漢字"
         self.save_review()

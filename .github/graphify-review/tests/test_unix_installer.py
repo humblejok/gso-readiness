@@ -32,6 +32,50 @@ def make_bundle(extra=None):
 
 
 class UnixInstallerTests(unittest.TestCase):
+    def test_preset_selects_platform_binary_and_explicit_download_options_win(self):
+        with tempfile.TemporaryDirectory() as directory:
+            preset = Path(directory) / "company.json"
+            preset.write_text('{"schema_version":"1.0","installer":{"github_bundle_url":"https://repo.local/preset.zip","github_bundle_sha256":"' + "1" * 64 + '","jfrog_cli":{"darwin-arm64":{"url":"https://repo.local/jf","sha256":"' + "2" * 64 + '"}}}}')
+            args = installer.parser().parse_args(["--preset", str(preset), "--github-bundle-url", "https://repo.local/explicit.zip"])
+            with mock.patch.object(installer.platform, "system", return_value="Darwin"), mock.patch.object(installer.platform, "machine", return_value="arm64"):
+                installer.apply_preset(args, {"--preset", "--github-bundle-url"})
+            self.assertEqual(args.github_bundle_url, "https://repo.local/explicit.zip")
+            self.assertEqual(args.github_bundle_sha256, "1" * 64)
+            self.assertEqual(args.jfrog_cli_sha256, "2" * 64)
+
+    def test_nonjava_install_preserves_project_settings_and_omits_truststore(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            target = home / "project"
+            settings = target / ".github/graphify-review/settings.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text("saved identity")
+            args = installer.parser().parse_args([
+                "--target-repository", str(target), "--install-root", str(home / "runtime"),
+                "--github-bundle-url", "https://repo.local/kit.zip", "--github-bundle-sha256", "1" * 64,
+                "--shell", "none", "--skip-setup",
+            ])
+            bundle = make_bundle({"kit/.github/graphify-review/settings.json": "publisher identity"})
+            with mock.patch.object(installer.platform, "system", return_value="Linux"), mock.patch.object(installer, "make_opener"), mock.patch.object(installer, "download", side_effect=lambda opener, url, checksum, destination, token, timeout: destination.write_bytes(bundle)) as download:
+                installer.install(args, home=home)
+            self.assertEqual(download.call_count, 1)
+            self.assertEqual(settings.read_text(), "saved identity")
+            self.assertFalse((home / "runtime/truststore/cacerts").exists())
+            self.assertNotIn("MAVEN_OPTS=", (home / "runtime/env.sh").read_text())
+
+    def test_installer_invokes_shared_setup_without_replacing_saved_choices(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / ".github/graphify-review/scripts/setup_review.py"
+            script.parent.mkdir(parents=True)
+            script.touch()
+            args = installer.parser().parse_args(["--preset", "company.json", "--non-interactive"])
+            with mock.patch.object(installer.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+                self.assertEqual(installer.finish_setup(args, {"target": str(root), "install_root": str(root / "runtime")}), 0)
+            self.assertIn("--non-interactive", run.call_args.args[0])
+            self.assertIn("--preset", run.call_args.args[0])
+            self.assertIn("--installed-root", run.call_args.args[0])
+
     def test_urls_and_hashes_reject_unsafe_inputs(self):
         for url in ("http://repo.local/file", "https://user:pass@repo.local/file",
                     "https://repo.local/file?token=secret", "https://artifactory.example.invalid/file",

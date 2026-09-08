@@ -19,6 +19,15 @@ skills or prompts, or an installed environment, preserve the applicable upstream
 `LICENSE`, `NOTICE`, and `LICENSE-MIT` files and comply with their terms. Bundled
 transitive dependencies also retain their own licenses and notices.
 
+## Keyring
+
+Optional authenticated Hub publishing uses the separately installed Python
+`keyring` distribution, pinned to `25.7.0` (MIT), maintained by the Python
+keyring contributors: https://github.com/jaraco/keyring.
+The kit uses native OS credential backends, not plaintext fallback plugins.
+Preserve upstream license files when redistributing an installed environment;
+keyring's transitive dependencies retain their own licenses.
+
 ## GitHub Copilot, VS Code, and JFrog
 
 GitHub Copilot and VS Code provide the editor/agent environment. JFrog CLI and

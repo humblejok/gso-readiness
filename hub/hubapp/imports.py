@@ -54,6 +54,7 @@ def _import(data, plans, actor):
         or used["storage_bytes"] + size > limits["storage_mb"] * 1024 * 1024
     ):
         raise PermissionDenied("Workspace import/storage limit reached.")
+    repository_created = repo is None
     if not repo:
         if Repository.objects.count() >= limits["repositories"]:
             raise PermissionDenied("Repository allowance reached.")
@@ -72,7 +73,9 @@ def _import(data, plans, actor):
     )
     result = {
         "import_id": str(record.id),
+        "organization_id": str(org.id),
         "repository_id": str(repo.id),
+        "repository_created": repository_created,
         "run_id": record.run_id,
         "created_findings": 0,
         "updated_findings": 0,

@@ -37,6 +37,10 @@ class WindowsInstallerContractTests(unittest.TestCase):
         self.assertNotIn("-truststorepassword", lowered)
         self.assertNotIn("replace_with_access_token", lowered)
 
+    def test_guided_setup_preset_optional_java_and_settings_preservation(self):
+        for text in ("[string]$Preset", "[switch]$NonInteractive", "[switch]$SkipSetup", "$PSBoundParameters.ContainsKey", "setup_review.py", "--installed-root", "if ($installTrustStore)", "graphify-review/settings.json"):
+            self.assertIn(text, self.script)
+
 
 if __name__ == "__main__":
     unittest.main()

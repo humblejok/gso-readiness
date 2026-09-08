@@ -40,6 +40,8 @@ In the reviewed project's Copilot chat, first export a previous full-project run
 
 This creates a validated `import-envelope.json` under the review kit's `output/exports/<export-id>/`, including proposed source-bound remediation plans. It does not rerun the review or upload anything. The command can also reuse an existing plans array via `remediations=path/to/remediations.json`. See the root [export instructions](../README.md#export-a-previous-review-to-finding-hub) for manual Python usage and missing historical source metadata. Reuse the exact same envelope for import retries; changing the payload for an already imported repository/run causes a conflict.
 
+With a Hub configured in the kit, new full reviews/revalidations/rescores prepare an envelope in their own `<run-dir>/hub/` after validation. To recover a missing/interrupted envelope, use `/export-review review=<new-run>/review.json resume=true`. Never upload a baseline envelope expecting it to describe a revalidation: the new run needs its own envelope with current source, findings and explicit lifecycle reconciliation. Import the baseline history before a revalidation referencing it. An all-resolved run still needs to be imported, even with zero remediation plans.
+
 The input is the JSON import envelope defined in the specification, not `REVIEW.md` and not a bare `review.json`. It contains:
 
 - `schema_version: "1.0"`;
@@ -48,7 +50,9 @@ The input is the JSON import envelope defined in the specification, not `REVIEW.
 - `review`: complete authoritative schema-2.1 review;
 - `remediations`: source-bound plans for every supported finding.
 
-Use **Import review** in the dashboard. Alternatively create a shown-once workspace API token with `reviews:write`, then submit:
+Use **Import review** in the dashboard, or configure the reviewed project's Hub URL and use `/publish-review review=<previous-run>` or `/publish-review envelope=<import-envelope.json>`. The kit's terminal login stores a `reviews:write` workspace token in the native OS credential store. See [one-time connection and publishing](../README.md#publish-results-to-the-configured-hub). No manual project creation is required: the import transaction creates a missing repository by its stable external ID **inside the token's existing workspace**, subject to subscription/quotas and token restrictions. Subsequent runs reuse that project; identical retries cannot create duplicates.
+
+For custom integrations, create a shown-once workspace API token with `reviews:write`, then submit:
 
 ```bash
 curl --fail-with-body \
@@ -63,7 +67,7 @@ Use the actual repository external ID and `review.run.run_id` in the header. Tok
 
 `201` means new import; identical replay returns `200`; the same run with different content returns `409`. Payloads are limited to 10 MiB, 1,000 findings, 500 remediation steps and 64 KiB per plan. The Hub preserves imported scores/verification rather than recomputing them. Schema validation and selected semantic checks do not prove that a review was correctly produced; run the review kit's validation before upload. Credential-pattern rejection is an additional guard, **not a guarantee that arbitrary prose contains no secrets**.
 
-The read/import API contract is documented in [OpenAPI 3.1](contracts/openapi.json). Jira retries, connection tests and other administrative mutations deliberately use the role-protected browser interface rather than granting administrative rights to ingestion tokens.
+The read/import API contract is documented in [OpenAPI 3.1](contracts/openapi.json). New import results include `organization_id` (for a workspace link) and `repository_created`; the latter describes the original import transaction. A `200` replay returns the stored original result, not a new project creation. Older stored imports can lack these optional fields. Jira retries, connection tests and other administrative mutations deliberately use the role-protected browser interface rather than granting administrative rights to ingestion tokens.
 
 The portable offline validator is maintained in `.github/graphify-review/scripts/import_contract.py` and vendored identically in `hubapp/import_contract.py`. Keep both copies and the review/finding schemas synchronized when changing the contract; regression tests check parity. The Hub adapter keeps Django validation errors at its application boundary. No repository-root files are needed in a deployed Hub container.
 

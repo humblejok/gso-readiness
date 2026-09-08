@@ -19,6 +19,21 @@
       }
     },
     "schemas": {
+      "ImportResult": {
+        "type": "object",
+        "required": ["import_id", "repository_id", "run_id", "created_findings", "updated_findings", "lifecycle_changes", "jira"],
+        "properties": {
+          "import_id": {"type": "string", "format": "uuid"},
+          "repository_id": {"type": "string", "format": "uuid"},
+          "organization_id": {"type": "string", "format": "uuid", "description": "Authenticated workspace; optional for older stored imports."},
+          "repository_created": {"type": "boolean", "description": "Whether the original import transaction created the repository. A 200 replay creates nothing, even if the stored value is true. Optional for older stored imports."},
+          "run_id": {"type": "string"},
+          "created_findings": {"type": "integer", "minimum": 0},
+          "updated_findings": {"type": "integer", "minimum": 0},
+          "lifecycle_changes": {"type": "integer", "minimum": 0},
+          "jira": {"type": "object", "properties": {"state": {"type": "string"}, "queued_deliveries": {"type": "integer", "minimum": 0}}}
+        }
+      },
       "ImportEnvelope": {
         "type": "object",
         "additionalProperties": false,
@@ -93,7 +108,7 @@
     "/api/v1/review-imports": {
       "post": {
         "operationId": "importReview",
-        "description": "Requires reviews:write; bounded to 10 MiB. Exact replays remain allowed after expiry.",
+        "description": "Requires reviews:write; bounded to 10 MiB. Atomically creates a missing repository by external ID within the authenticated workspace, subject to token restrictions and quotas. Exact replays remain allowed after expiry.",
         "parameters": [
           {
             "name": "Idempotency-Key",
@@ -117,10 +132,12 @@
         },
         "responses": {
           "200": {
-            "description": "Identical replay"
+            "description": "Identical replay of the stored original result; no new project or import created",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ImportResult"}}}
           },
           "201": {
-            "description": "New immutable import"
+            "description": "New immutable import; missing repository created in the same transaction",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ImportResult"}}}
           },
           "400": {
             "description": "Contract validation failed"

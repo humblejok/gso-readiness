@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from review_core import load_yaml
+from review_settings import SettingsError, process_environment
 
 KIT_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = KIT_ROOT.parents[1]
@@ -85,9 +86,9 @@ def inspect_environment(
         "\nprint(json.dumps({'python_version':[sys.version_info.major,sys.version_info.minor,sys.version_info.micro],'graphifyy':v,'packages':packages}))"
     )
     try:
-        completed = subprocess.run([str(python_path), "-c", probe], check=True, capture_output=True, text=True)
+        completed = subprocess.run([str(python_path), "-c", probe], check=True, capture_output=True, text=True, timeout=20)
         details = json.loads(completed.stdout)
-    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
         result["probe_error"] = str(exc)
         return result
     result.update(details)
@@ -148,7 +149,7 @@ def bootstrap(
     if offline:
         install.insert(4, "--no-index")
     try:
-        subprocess.run(install, check=True)
+        subprocess.run(install, check=True, env=process_environment(workspace))
     except subprocess.CalledProcessError as exc:
         hint = " The environment was created but installation failed; rerun when package access is available."
         raise BootstrapError(f"dependency installation failed with exit code {exc.returncode}.{hint}") from exc
@@ -172,7 +173,7 @@ def main() -> int:
         policy = load_yaml(args.policy)
         check_only = args.check or (args.first_call and not bool(policy.get("runtime", {}).get("auto_bootstrap")))
         state = bootstrap(Path(args.workspace).resolve(), policy, check_only=check_only, offline=args.offline)
-    except (BootstrapError, subprocess.CalledProcessError, OSError) as exc:
+    except (BootstrapError, SettingsError, subprocess.CalledProcessError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     if args.json:

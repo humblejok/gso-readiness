@@ -19,6 +19,7 @@ import shlex
 import shutil
 import ssl
 import stat
+import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -185,7 +186,7 @@ def profile_content(original: str, env_path: Path) -> str:
     return original + ("\n" if original and not original.endswith("\n") else "") + "\n" + block + "\n"
 
 
-def environment_script(root: Path, store_type: str, include_jfrog: bool) -> str:
+def environment_script(root: Path, store_type: str, include_jfrog: bool, include_truststore: bool = True) -> str:
     options = f"-Djavax.net.ssl.trustStore={root / 'truststore' / 'cacerts'}"
     if store_type:
         options += f" -Djavax.net.ssl.trustStoreType={store_type}"
@@ -204,6 +205,8 @@ fi
     text += '''MAVEN_OPTS="${MAVEN_OPTS:+${MAVEN_OPTS} }${_GRAPHIFY_REVIEW_JAVA_OPTIONS}"
 export MAVEN_OPTS _GRAPHIFY_REVIEW_JAVA_OPTIONS
 '''
+    if not include_truststore:
+        text = "# Graphify Review tool PATH; no Java settings are changed.\n"
     if include_jfrog:
         text += f"_graphify_review_bin={shlex.quote(str(root / 'bin'))}\n"
         text += '''case ":${PATH-}:" in
@@ -300,8 +303,11 @@ def install(args, *, home: Path | None = None) -> dict:
     jfrog_url = args.jfrog_cli_url.replace("{os}", "darwin" if system == "Darwin" else "linux").replace("{arch}", architecture or "unsupported")
     if args.jfrog_cli_url and not architecture:
         raise InstallError("Optional JFrog installation supports amd64 and arm64 only")
-    artifacts = [("kit", args.github_bundle_url, args.github_bundle_sha256),
-                 ("cacerts", args.truststore_url, args.truststore_sha256)]
+    artifacts = [("kit", args.github_bundle_url, args.github_bundle_sha256)]
+    if bool(args.truststore_url) != bool(args.truststore_sha256):
+        raise InstallError("Supply both truststore URL and SHA-256, or omit both when Java trust configuration is not needed")
+    if args.truststore_url:
+        artifacts.append(("cacerts", args.truststore_url, args.truststore_sha256))
     if jfrog_url:
         artifacts.append(("jf", jfrog_url, args.jfrog_cli_sha256))
     for name, url, checksum in artifacts:
@@ -317,12 +323,16 @@ def install(args, *, home: Path | None = None) -> dict:
             print(f"Downloading and verifying {name}...", flush=True)
             download(opener, url, checksum, stage / name, token, args.timeout)
         contents = read_bundle(stage / "kit")
-        plan = {github / relative: (data, 0o644) for relative, data in contents.items()}
-        plan[root / "truststore/cacerts"] = ((stage / "cacerts").read_bytes(), 0o600)
+        # Project identities are configured per project, never copied from the publisher's kit.
+        plan = {github / relative: (data, 0o644) for relative, data in contents.items()
+                if relative != "graphify-review/settings.json" and not relative.startswith("graphify-review/settings.json.bak-")}
+        if args.truststore_url:
+            plan[root / "truststore/cacerts"] = ((stage / "cacerts").read_bytes(), 0o600)
         if jfrog_url:
             plan[root / "bin/jf"] = ((stage / "jf").read_bytes(), 0o755)
         plan[env_path] = (environment_script(root, args.truststore_type,
-                                          bool(jfrog_url) or (root / "bin/jf").is_file()).encode("utf-8"), 0o600)
+                                          bool(jfrog_url) or (root / "bin/jf").is_file(),
+                                          bool(args.truststore_url) or (root / "truststore/cacerts").is_file()).encode("utf-8"), 0o600)
         for path in profiles:
             assert_writable_target(path)
             original = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -338,16 +348,79 @@ def install(args, *, home: Path | None = None) -> dict:
         changed = commit_files(plan, backup, github)
     return {"platform": system, "architecture": architecture, "target": str(target),
             "environment": str(env_path), "shell_profiles": [str(path) for path in profiles],
-            "changed_files": changed, "backup_directory": str(backup) if changed else None}
+            "install_root": str(root), "changed_files": changed, "backup_directory": str(backup) if changed else None}
+
+
+def apply_preset(args, explicit: set[str]) -> None:
+    """Read only a local, administrator-approved preset before the kit is available."""
+    if not args.preset:
+        return
+    try:
+        path = Path(args.preset)
+        if path.stat().st_size > 128 * 1024:
+            raise InstallError("Preset exceeds 128 KiB")
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        if not isinstance(data, dict) or data.get("schema_version") != "1.0" or set(data) - {"schema_version", "project", "user", "installer"}:
+            raise InstallError("Expected a schema-1.0 corporate preset with installer/project/user sections")
+        values = data.get("installer", {})
+        allowed = {"github_bundle_url", "github_bundle_sha256", "truststore_url", "truststore_sha256", "truststore_type", "jfrog_cli"}
+        if not isinstance(values, dict) or set(values) - allowed:
+            raise InstallError("Unknown installer preset field")
+        for key in allowed - {"jfrog_cli"}:
+            if key in values and "--" + key.replace("_", "-") not in explicit:
+                if not isinstance(values[key], str):
+                    raise InstallError("Installer preset values must be strings")
+                setattr(args, key, values[key])
+        for key, source in (("proxy", "proxy_url"), ("ca_bundle", "ca_bundle")):
+            if "--" + key.replace("_", "-") not in explicit and data.get("user", {}).get(source):
+                setattr(args, key, data["user"][source])
+        system = "darwin" if platform.system() == "Darwin" else "linux"
+        arch = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64", "amd64": "amd64"}.get(platform.machine().lower())
+        artifact = values.get("jfrog_cli", {}).get(f"{system}-{arch}", {})
+        for key, source in (("jfrog_cli_url", "url"), ("jfrog_cli_sha256", "sha256")):
+            if "--" + key.replace("_", "-") not in explicit and source in artifact:
+                setattr(args, key, artifact[source])
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        if isinstance(exc, InstallError):
+            raise
+        raise InstallError("Cannot read the local corporate preset; check UTF-8 JSON and field types") from exc
+
+
+def finish_setup(args, result) -> int:
+    script = Path(result["target"]) / ".github/graphify-review/scripts/setup_review.py"
+    if not script.is_file():
+        print("This bundle predates guided setup. Install a current bundle, then run /setup-review.")
+        return 0
+    if args.skip_setup:
+        print("Guided setup deferred. Run /setup-review in Copilot when ready.")
+        return 0
+    command = [sys.executable, str(script), "configure", "--repository", result["target"], "--installed-root", result["install_root"]]
+    for key, value in (("proxy_url", args.proxy), ("ca_bundle", args.ca_bundle), ("java_truststore_type", args.truststore_type)):
+        if value:
+            command.extend(["--default", f"user.{key}={value}"])
+    if args.preset:
+        command.extend(["--preset", str(Path(args.preset).resolve())])
+    if args.non_interactive or not sys.stdin.isatty():
+        if not args.preset:
+            print("No interactive terminal. Run /setup-review to finish configuration.")
+            return 0
+        command.append("--non-interactive")
+    # Installer-discovered local files are defaults, not overrides of existing user choices.
+    # Pass their location through the environment for CLI discovery; the wizard can confirm paths.
+    environment = os.environ.copy()
+    root = Path(result["install_root"])
+    if (root / "bin/jf").is_file():
+        environment["PATH"] = str(root / "bin") + os.pathsep + environment.get("PATH", "")
+    return subprocess.run(command, env=environment).returncode
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     result.add_argument("--target-repository", default=".")
     result.add_argument("--github-bundle-url", default="https://artifactory.example.invalid/artifactory/REPLACE_ME/graphify-review-github.zip")
-    result.add_argument("--github-bundle-sha256", required=True)
-    result.add_argument("--truststore-url", default="https://artifactory.example.invalid/artifactory/REPLACE_ME/cacerts")
-    result.add_argument("--truststore-sha256", required=True)
+    result.add_argument("--github-bundle-sha256", default="")
+    result.add_argument("--truststore-url", default="", help="Optional approved Java truststore download")
+    result.add_argument("--truststore-sha256", default="")
     result.add_argument("--truststore-type", choices=("JKS", "PKCS12"), default="")
     result.add_argument("--jfrog-cli-url", default="", help="Raw Unix jf binary URL; optional {os}/{arch} placeholders")
     result.add_argument("--jfrog-cli-sha256", default="", help="Hash of the exact platform/architecture binary")
@@ -357,6 +430,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--ca-bundle", help="Existing PEM CA bundle for HTTPS downloads, not the Java cacerts file")
     result.add_argument("--shell", choices=("auto", "bash", "zsh", "none"), default="auto")
     result.add_argument("--timeout", type=int, default=120, help="Socket timeout per download (seconds)")
+    result.add_argument("--preset", help="Local administrator-approved preset JSON")
+    result.add_argument("--skip-setup", action="store_true")
+    result.add_argument("--non-interactive", action="store_true", help="Apply preset defaults without prompts; explicit flags win")
     return result
 
 
@@ -372,12 +448,21 @@ def main() -> int:
         print("Run this installer as your normal user, without sudo.", file=sys.stderr)
         return 2
     try:
+        apply_preset(args, {value.split("=", 1)[0] for value in sys.argv[1:] if value.startswith("--")})
+        if not args.github_bundle_sha256 and sys.stdin.isatty() and not args.non_interactive:
+            print("Ask your administrator for the approved kit URL/checksum, or restart with --preset company.json.")
+            args.github_bundle_url = input("Kit ZIP HTTPS URL: ").strip()
+            args.github_bundle_sha256 = input("Approved SHA-256: ").strip()
         result = install(args)
     except (InstallError, OSError, UnicodeError, zipfile.BadZipFile, RuntimeError) as exc:
         # Avoid raw network/SSL diagnostics, which may contain credentials or URLs.
         message = str(exc) if isinstance(exc, InstallError) else f"Installation failed ({type(exc).__name__}); check filesystem permissions, archive, and CA bundle"
         print(message, file=sys.stderr)
         return 2
+    setup_code = finish_setup(args, result)
+    if setup_code:
+        print("Kit installation succeeded, but guided setup needs attention. Rerun /setup-review; the installed kit and backups are retained.", file=sys.stderr)
+        return setup_code
     print(json.dumps(result, indent=2, ensure_ascii=False))
     print("Activate in this Bash/Zsh terminal with:")
     print("  . " + shlex.quote(result["environment"]))
