@@ -217,6 +217,10 @@ The endpoint accepts an envelope rather than modifying Graphify's authoritative 
 
 ### 7.2 Envelope example
 
+The review kit provides `/export-review review=<review.json-or-run-directory> repository-id=<stable-id> default-branch=<branch>` to produce this envelope from a previous schema-2.1 full-project review. It prepares a new local export directory, generates or accepts source-bound remediation plans, then validates and writes `import-envelope.json` without uploading or rerunning audits. The original review is embedded unchanged. Source metadata is taken from the review or matching run context; explicit missing-metadata values must describe the original revision and must not conflict with recorded values. No historical revision is inferred from current HEAD. See the root README for the deterministic `export_review.py prepare` / `build` CLI and optional arguments.
+
+Preparation output is not an import envelope. The builder rejects missing/invalid remediation plans and source review changes between preparation and build. Every export uses new output paths; existing envelopes are never overwritten. Retry imports with the exact same envelope because a changed payload for an already imported repository/run conflicts. Contract validation does not rerun historical policy/evidence checks or prove remediation correctness. The kit and Hub share a portable offline validator, with vendored-copy and schema parity covered by tests.
+
 ```json
 {
   "schema_version": "1.0",

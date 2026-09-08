@@ -533,21 +533,10 @@ def main() -> int:
         return 1
     errors = validate_review(data, policy, Path(args.repository).resolve(), verified, evidence, profile, anchors)
     try:
-        import jsonschema  # type: ignore
+        from import_contract import review_validator
 
-        schema_dir = Path(__file__).resolve().parents[1] / "schema"
-        schema = json.loads((schema_dir / "review.schema.json").read_text(encoding="utf-8"))
-        finding_schema = json.loads((schema_dir / "finding.schema.json").read_text(encoding="utf-8"))
-        resolver = jsonschema.RefResolver(
-            base_uri=(schema_dir / "review.schema.json").resolve().as_uri(),
-            referrer=schema,
-            store={
-                "finding.schema.json": finding_schema,
-                (schema_dir / "finding.schema.json").resolve().as_uri(): finding_schema,
-                finding_schema["$id"]: finding_schema,
-            },
-        )
-        validator = jsonschema.Draft202012Validator(schema, resolver=resolver, format_checker=jsonschema.FormatChecker())
+        # Share the offline resolver and decimal score handling used by Hub exports.
+        validator = review_validator(Path(__file__).resolve().parents[1] / "schema")
         errors.extend(f"schema: {error.message}" for error in validator.iter_errors(data))
     except ImportError:
         pass

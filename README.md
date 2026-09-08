@@ -426,6 +426,43 @@ jf audit --secrets --format=simple-json --fail=false
 
 The first command must include `scaScanStatusCode: 0`; the second must include `secretsScanStatusCode: 0`. Findings are allowed—the status code establishes that the scanner completed.
 
+## Export a previous review to Finding Hub
+
+Use the Copilot slash command with an explicit final review or run directory:
+
+```text
+/export-review review=.github/graphify-review/output/runs/<run-id>/review.json repository-id=repo:orders-api default-branch=main
+/export-review review=artifacts/previous-run repository-id=repo:orders-api repository-name="Orders API" default-branch=main remediations=artifacts/remediations.json
+```
+
+The command reads the original schema-2.1 `review.json`, generates proposed coding-agent remediation plans for every supported/partially-supported finding unless a plans file was supplied, and writes a validated `import-envelope.json` in a new `.github/graphify-review/output/exports/<export-id>/` directory. Upload that file through Finding Hub's **Import review** screen. It does not upload anything, require Hub/Jira credentials, rerun Graphify/Xray/tests, rescore, or edit the reviewed project. A Markdown report or vulnerability-command `check.json`/`apply.json` is not a full review and cannot be exported through this command.
+
+`repository-id` must remain stable across runs and machines. The repository name defaults to the name in the original review; supply `repository-name` when missing. `default-branch` is required and may differ from the reviewed branch. Optional `clone-url` must be credential-free HTTPS. Optional `output` must name a new directory. Paths and values containing spaces must be quoted.
+
+Source metadata comes from the original review or matching `run-context.json`, never current HEAD. Only when the original metadata is missing, supply `source-commit=<original-sha>` and/or `source-branch=<original-branch>`. Conflicting metadata is rejected. The review is embedded unchanged, including fingerprints, scores, source snapshot and revalidation reconciliation. If the original run included uncommitted changes, the exporter warns that its commit alone does not reproduce the reviewed source.
+
+The script validates the same offline import contract used by Hub; it does not repeat historical policy/evidence validation or establish that remediation proposals are correct. Missing/invalid plans, unsupported review schemas, changed input files, credential-pattern matches and payload-limit violations block envelope creation. Preparation files are not importable envelopes. Review the proposed plans and check for sensitive content before sharing.
+
+For retries, reuse the exact generated envelope. Its idempotency key is `<repository-id>:<original-run-id>`. Hub returns `409` if that repository/run has already been imported with different plans or metadata; exporting again is not a way to overwrite an import. Use a new review/revalidation run for updated findings.
+
+The dedicated environment now includes pinned `jsonschema` and `referencing` dependencies. First-call bootstrap detects missing packages even in an existing `.graphify-review-venv`; manual setup remains available with `python .github/graphify-review/scripts/bootstrap_environment.py`. Corporate installations use the same configured pip proxy, trusted CA and Artifactory index as the rest of the kit.
+
+### Manual export (without Copilot)
+
+Use the Python executable returned by bootstrap as `<review-python>` (`.graphify-review-venv/Scripts/python.exe` on Windows, `.graphify-review-venv/bin/python` on macOS/Linux):
+
+```text
+<review-python> .github/graphify-review/scripts/export_review.py prepare --review "path/to/review.json" --repository-id repo:orders-api --repository-name "Orders API" --default-branch main --output-directory "artifacts/new-export"
+```
+
+Read `artifacts/new-export/export-request.json`, then author `artifacts/new-export/remediations.json` as a JSON array of source-bound plans using [the remediation contract](docs/graphify_finding_hub_spec.md#73-remediation-plan-requirements). With no supported findings, preparation creates an empty plans array automatically. Then run:
+
+```text
+<review-python> .github/graphify-review/scripts/export_review.py build --request "artifacts/new-export/export-request.json"
+```
+
+Alternatively pass `--remediations "path/to/existing-plans.json"` to `build`. Success prints the envelope path, idempotency key and payload hash. Blocked exports exit with code `2` and a sanitized error. Original inputs and existing exports are never overwritten.
+
 ## Vulnerability upgrade commands
 
 Two independent Copilot slash commands turn completed JFrog Xray findings into conservative upgrade decisions:

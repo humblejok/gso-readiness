@@ -1,3 +1,6 @@
 # Runtime dependency for the Graphify evidence source.
 # Pinned so identical review-kit inputs use the same graph extractor.
 graphifyy==0.9.46
+# Offline validation of Finding Hub export envelopes (also pinned by the Hub).
+jsonschema==4.26.0
+referencing==0.37.0

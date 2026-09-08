@@ -60,7 +60,10 @@ def environment_commands(venv: Path) -> tuple[Path, Path]:
     return venv / "bin" / "python", venv / "bin" / "graphify"
 
 
-def inspect_environment(venv: Path, expected_version: str, minimum_python: tuple[int, int]) -> dict[str, Any]:
+def inspect_environment(
+    venv: Path, expected_version: str, minimum_python: tuple[int, int],
+    expected_packages: dict[str, str] | None = None,
+) -> dict[str, Any]:
     python_path, graphify_path = environment_commands(venv)
     result: dict[str, Any] = {
         "exists": venv.exists(),
@@ -76,7 +79,10 @@ def inspect_environment(venv: Path, expected_version: str, minimum_python: tuple
         "import importlib.metadata,json,sys;"
         "\ntry:\n v=importlib.metadata.version('graphifyy')"
         "\nexcept importlib.metadata.PackageNotFoundError:\n v=None"
-        "\nprint(json.dumps({'python_version':[sys.version_info.major,sys.version_info.minor,sys.version_info.micro],'graphifyy':v}))"
+        f"\npackages={{}}\nfor name in {list(expected_packages or {})!r}:"
+        "\n try:\n  packages[name]=importlib.metadata.version(name)"
+        "\n except importlib.metadata.PackageNotFoundError:\n  packages[name]=None"
+        "\nprint(json.dumps({'python_version':[sys.version_info.major,sys.version_info.minor,sys.version_info.micro],'graphifyy':v,'packages':packages}))"
     )
     try:
         completed = subprocess.run([str(python_path), "-c", probe], check=True, capture_output=True, text=True)
@@ -89,6 +95,7 @@ def inspect_environment(venv: Path, expected_version: str, minimum_python: tuple
         tuple(details.get("python_version", [0, 0])[:2]) >= minimum_python
         and details.get("graphifyy") == expected_version
         and graphify_path.is_file()
+        and all(details.get("packages", {}).get(name) == version for name, version in (expected_packages or {}).items())
     )
     return result
 
@@ -109,7 +116,11 @@ def bootstrap(
     )
     minimum = parse_minimum_python(str(runtime.get("minimum_python", "3.10")))
     required_version = required_graphify_version(requirements)
-    state = inspect_environment(venv, required_version, minimum)
+    expected_packages = dict(re.findall(
+        r"^\s*([A-Za-z0-9_.-]+)==([A-Za-z0-9_.+-]+)\s*(?:#.*)?$",
+        requirements.read_text(encoding="utf-8"), re.MULTILINE,
+    ))
+    state = inspect_environment(venv, required_version, minimum, expected_packages)
     if state["ready"]:
         state["action"] = "none"
         return state
@@ -141,9 +152,9 @@ def bootstrap(
     except subprocess.CalledProcessError as exc:
         hint = " The environment was created but installation failed; rerun when package access is available."
         raise BootstrapError(f"dependency installation failed with exit code {exc.returncode}.{hint}") from exc
-    state = inspect_environment(venv, required_version, minimum)
+    state = inspect_environment(venv, required_version, minimum, expected_packages)
     if not state["ready"]:
-        raise BootstrapError("installation completed but Graphify did not pass the environment probe")
+        raise BootstrapError("installation completed but the review runtime or pinned dependencies did not pass the environment probe")
     state["action"] = "created" if created else "updated"
     return state
 
