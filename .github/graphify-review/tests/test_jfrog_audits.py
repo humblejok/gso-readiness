@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -30,6 +31,75 @@ from validate_evidence import validate_evidence  # noqa: E402
 
 
 class JfrogAuditTests(unittest.TestCase):
+    def test_command_decodes_utf8_independently_of_windows_locale(self) -> None:
+        text = '\ufeff{"summary":"Stéphane — 漢字"}'
+        completed = subprocess.CompletedProcess(["jf"], 0, text.encode("utf-8"), b"diagnostic\xff")
+        with mock.patch.object(audits.subprocess, "run", return_value=completed) as runner:
+            result = audits.run_command(["jf"], ROOT, 10)
+        self.assertNotIn("text", runner.call_args.kwargs)
+        self.assertEqual(result["stdout"], text.lstrip("\ufeff"))
+        self.assertFalse(result["decoding_error"])
+        self.assertIn("diagnostic", result["stderr"])
+
+    def test_invalid_utf8_stdout_cannot_be_complete_evidence(self) -> None:
+        completed = subprocess.CompletedProcess(["jf"], 0, b'{"summary":"\xff"}', b"")
+        with mock.patch.object(audits.subprocess, "run", return_value=completed):
+            result = audits.run_command(["jf"], ROOT, 10)
+        self.assertTrue(result["decoding_error"])
+        payload = {"scansStatus": {"scaScanStatusCode": 0}}
+        self.assertEqual(jfrog_payload_state(payload, "sca", result, 0)[:2], ("unavailable", "not_completed"))
+        self.assertEqual(audits.classify({}, result)[:2], ("unavailable", "not_completed"))
+
+    def test_timeout_handles_truncated_utf8(self) -> None:
+        timeout = subprocess.TimeoutExpired(["jf"], 10, output=b"partial\xe2\x80", stderr=b"error\xc3")
+        with mock.patch.object(audits.subprocess, "run", side_effect=timeout):
+            result = audits.run_command(["jf"], ROOT, 10)
+        self.assertTrue(result["timed_out"])
+        self.assertEqual(jfrog_payload_state({}, "sca", result, 0)[:2], ("unavailable", "not_completed"))
+
+    def test_tool_version_has_explicit_utf8_encoding(self) -> None:
+        with mock.patch.object(audits.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "jf 2.test", "")) as runner:
+            self.assertEqual(audits.tool_version("jf", ROOT), "jf 2.test")
+        self.assertEqual(runner.call_args.kwargs["encoding"], "utf-8-sig")
+
+    def test_empty_or_missing_cve_ids_preserve_xray_finding(self) -> None:
+        for cve in ({}, {"id": None}, {"id": ""}, {"id": "  "}, {"id": 123}, None, "unexpected"):
+            with self.subTest(cve=cve):
+                row = {"issueId": "XRAY-123", "severity": "High", "cves": [cve]}
+                findings = extract_jfrog_sca_findings({"vulnerabilities": [row]})
+                self.assertEqual(len(findings), 1)
+                self.assertEqual(findings[0]["issue_id"], "XRAY-123")
+                self.assertEqual(findings[0]["advisory_ids"], [])
+                self.assertFalse(findings[0]["identity_missing"])
+
+    def test_mixed_cve_entries_keep_valid_trimmed_ids(self) -> None:
+        findings = extract_jfrog_sca_findings({"vulnerabilities": [{"cves": [
+            {"id": "", "cvssV3": "8.1"}, {}, {"id": " CVE-2026-12345 ", "cvssV3": "8.1"},
+        ]}]})
+        self.assertEqual(findings[0]["advisory_ids"], ["CVE-2026-12345"])
+        self.assertEqual(findings[0]["cves"][0]["cvssV3"], "8.1")
+
+    def test_unidentified_findings_are_retained_and_block_scan(self) -> None:
+        payload = {"scansStatus": {"scaScanStatusCode": 0}, "vulnerabilities": [
+            {"cves": [{"id": ""}], "summary": "first"},
+            {"cves": [], "summary": "second"},
+        ]}
+        execution = {**self.execution(), "stdout": json.dumps(payload)}
+        with mock.patch.object(audits, "run_command", return_value=execution):
+            result = audits.execute_jfrog_target(ROOT, {"id": "maven:.", "directory": ".", "manager": "maven"}, "sca", 10, None)
+        self.assertEqual(len(result["findings"]), 2)
+        self.assertEqual(result["completion"], "not_completed")
+
+    def test_normalization_exception_is_incomplete_without_raw_error(self) -> None:
+        execution = {**self.execution(), "stdout": json.dumps({"scansStatus": {"scaScanStatusCode": 0}})}
+        with (
+            mock.patch.object(audits, "run_command", return_value=execution),
+            mock.patch.object(audits, "extract_jfrog_sca_findings", side_effect=KeyError("SECRET-DO-NOT-LOG")),
+        ):
+            result = audits.execute_jfrog_target(ROOT, {"id": "maven:.", "directory": ".", "manager": "maven"}, "sca", 10, None)
+        self.assertEqual(result["completion"], "not_completed")
+        self.assertNotIn("SECRET-DO-NOT-LOG", json.dumps(result))
+
     def execution(self, exit_code: int = 0, timed_out: bool = False) -> dict:
         return {"stdout": "", "stderr": "", "exit_code": exit_code, "timed_out": timed_out}
 

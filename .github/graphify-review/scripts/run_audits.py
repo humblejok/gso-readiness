@@ -63,7 +63,10 @@ def output_hash(stdout: str, stderr: str) -> str:
 
 def tool_version(executable: str, cwd: Path) -> str | None:
     try:
-        result = subprocess.run([executable, "--version"], cwd=cwd, capture_output=True, text=True, timeout=20)
+        result = subprocess.run(
+            [executable, "--version"], cwd=cwd, capture_output=True,
+            text=True, encoding="utf-8-sig", errors="replace", timeout=20,
+        )
         return (result.stdout or result.stderr).strip().splitlines()[0]
     except (OSError, subprocess.SubprocessError, IndexError):
         return None
@@ -77,14 +80,25 @@ def run_command(
 ) -> dict[str, Any]:
     try:
         result = subprocess.run(
-            command, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=environment,
+            command, cwd=cwd, capture_output=True, timeout=timeout, env=environment,
         )
-        return {"exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr, "timed_out": False}
+        # JSON must never be parsed after lossy decoding of package/advisory identifiers.
+        try:
+            stdout = result.stdout.decode("utf-8-sig")
+            decoding_error = False
+        except UnicodeDecodeError:
+            stdout = result.stdout.decode("utf-8-sig", errors="replace")
+            decoding_error = True
+        return {
+            "exit_code": result.returncode, "stdout": stdout,
+            "stderr": result.stderr.decode("utf-8-sig", errors="replace"),
+            "timed_out": False, "decoding_error": decoding_error,
+        }
     except subprocess.TimeoutExpired as exc:
         return {
             "exit_code": None,
-            "stdout": exc.stdout.decode() if isinstance(exc.stdout, bytes) else exc.stdout or "",
-            "stderr": exc.stderr.decode() if isinstance(exc.stderr, bytes) else exc.stderr or "",
+            "stdout": exc.stdout.decode("utf-8-sig", errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout or "",
+            "stderr": exc.stderr.decode("utf-8-sig", errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr or "",
             "timed_out": True,
         }
 
@@ -93,6 +107,8 @@ def classify(audit: dict[str, Any], execution: dict[str, Any]) -> tuple[str, str
     combined = execution["stdout"] + "\n" + execution["stderr"]
     if execution["timed_out"]:
         return "unavailable", "not_completed", "Audit timed out before producing complete evidence."
+    if execution.get("decoding_error"):
+        return "unavailable", "not_completed", "Audit output could not be decoded as UTF-8."
     if audit.get("evidence_kind") == "tests_executed" and NO_TESTS_PATTERNS.search(combined):
         return "unavailable", "not_completed", "The test runner completed without discovering executable tests."
     if execution["exit_code"] == 0:
@@ -224,19 +240,33 @@ def _source_collections(payload: dict[str, Any], names: tuple[str, ...]) -> list
 
 def extract_jfrog_sca_findings(payload: dict[str, Any]) -> list[dict[str, Any]]:
     findings: dict[tuple[str, str, str], dict[str, Any]] = {}
-    for collection, row in _source_collections(payload, ("vulnerabilities", "securityViolations")):
+    for name in ("vulnerabilities", "securityViolations"):
+        rows = payload.get(name)
+        if rows is not None and (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)):
+            raise ValueError("Invalid JFrog finding collection")
+    for index, (collection, row) in enumerate(_source_collections(payload, ("vulnerabilities", "securityViolations"))):
         cves = []
         for cve in row.get("cves", []) if isinstance(row.get("cves"), list) else []:
             if not isinstance(cve, dict) or not isinstance(cve.get("id"), str):
                 continue
-            cves.append({key: cve[key] for key in ("id", "cvssV2", "cvssV3", "cwe") if cve.get(key)})
-        issue_id = str(row.get("issueId") or "")
+            identifier = cve["id"].strip()
+            if not identifier:
+                continue
+            cves.append({"id": identifier, **{
+                key: cve[key] for key in ("cvssV2", "cvssV3", "cwe") if cve.get(key)
+            }})
+        issue_id = row.get("issueId")
+        issue_id = issue_id.strip() if isinstance(issue_id, str) else ""
         package = str(row.get("impactedPackageName") or "")
         version = str(row.get("impactedPackageVersion") or "")
-        key = (issue_id or ",".join(item["id"] for item in cves), package, version)
+        # Keep unidentified rows separate; callers must not use them for automatic upgrades.
+        identity_missing = not issue_id and not cves
+        identity = issue_id or ",".join(sorted({item["id"] for item in cves}))
+        key = (identity or f"unidentified-row:{index}", package, version)
         normalized = findings.setdefault(key, {
             "type": "dependency_vulnerability",
             "issue_id": issue_id or None,
+            "identity_missing": identity_missing,
             "advisory_ids": sorted({item["id"] for item in cves}),
             "package": package,
             "installed_version": version,
@@ -314,6 +344,8 @@ def jfrog_payload_state(
 ) -> tuple[str, str, str]:
     if execution["timed_out"]:
         return "unavailable", "not_completed", "JFrog audit timed out before producing complete evidence."
+    if execution.get("decoding_error"):
+        return "unavailable", "not_completed", "JFrog audit stdout is not valid UTF-8; no upgrade decision is safe."
     if execution["exit_code"] not in {0, 3}:
         return "unavailable", "not_completed", "JFrog audit failed before producing a trustworthy scan result."
     if payload is None:
@@ -484,14 +516,30 @@ def execute_jfrog_target(
     use_wrapper = manager in wrapper_names and any((directory / name).is_file() for name in wrapper_names[manager])
     command = jfrog_command(scan_kind, manager, server_id, use_wrapper)
     execution = run_command(command, directory, timeout, jfrog_environment())
-    payload = parse_jfrog_simple_json(execution["stdout"])
-    if scan_kind == "sca":
-        findings = extract_jfrog_sca_findings(payload or {})
-        active_findings = findings
-    else:
-        findings = extract_jfrog_secret_findings(payload or {}, repository)
-        active_findings = [item for item in findings if item.get("active")]
+    payload = None
+    findings = []
+    active_findings = []
+    parsing_error = None
+    if not execution.get("decoding_error") and not execution["timed_out"]:
+        try:
+            payload = parse_jfrog_simple_json(execution["stdout"])
+            if scan_kind == "sca":
+                findings = extract_jfrog_sca_findings(payload or {})
+                active_findings = findings
+            else:
+                findings = extract_jfrog_secret_findings(payload or {}, repository)
+                active_findings = [item for item in findings if item.get("active")]
+        except (ValueError, TypeError, KeyError, AttributeError):
+            # Exception text and raw CLI output can contain credentials or scanned secrets.
+            parsing_error = "JFrog output could not be normalized; no complete scan evidence was produced."
     state, completion, summary = jfrog_payload_state(payload, scan_kind, execution, len(active_findings))
+    if parsing_error:
+        state, completion, summary = "unavailable", "not_completed", parsing_error
+    elif any(item.get("identity_missing") for item in findings):
+        state, completion, summary = (
+            "unavailable", "not_completed",
+            "JFrog findings include entries without an Xray issue ID or CVE ID; automatic upgrade decisions are blocked.",
+        )
     setup_hints = jfrog_failure_hints(payload, execution) if completion != "complete" else []
     if setup_hints:
         summary += f" Setup checks: {', '.join(setup_hints)}."

@@ -462,6 +462,8 @@ Transitive dependencies, shared/ambiguous version properties, unsupported ranges
 
 Each invocation writes immutable output beneath `.github/graphify-review/output/vulnerability-upgrades/<run-id>/`. Check runs produce `check.json` and `CHECK.md`; update runs produce `apply.json`, `APPLY.md`, and file backups when changes are made.
 
+JFrog JSON output is decoded explicitly as UTF-8, including on Windows; no `PYTHONUTF8` setup is required. Empty or missing CVE IDs are tolerated when the finding has an Xray issue ID. Findings with neither identifier block automatic upgrade decisions. If scan execution, decoding, or normalization fails, both commands write `scan_incomplete` reports and exit nonzero before Artifactory queries or dependency edits. Unknown counts are JSON `null` / Markdown `unavailable`, not zero; the reports include sanitized scan failure details without raw CLI output or credentials. Failures before scanning (such as an invalid repository or a dirty-worktree safety check), or an unwritable output directory, may prevent report creation.
+
 ## Policy
 
 `.github/graphify-review/policy.yaml` controls:
