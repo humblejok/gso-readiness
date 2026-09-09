@@ -20,7 +20,7 @@ To implement findings selected in the Hub:
 
 1. Upgrade the Hub and run its database migrations; see [Hub upgrade instructions](hub/README.md#upgrade-for-finding-implementation).
 2. On **Findings**, click **Implement** on open items. **Cancel implementation** removes the flag. Queued items have an editable remediation on their details page. Rejected/inconclusive items are hidden by default; use **Show rejected and inconclusive** to include them.
-3. Install GitHub CLI (`gh`) through your approved channel and authenticate to your GitHub/GitHub Enterprise host. The checkout must be clean, on a named branch, and match its remote branch tip. Commit shared project settings from `/setup-review` so they exist on new worktrees.
+3. Keep your existing Git authentication. GitHub/GitHub Enterprise additionally uses `gh`; Azure DevOps Server/Services uses the REST adapter and requires **neither gh nor Azure CLI**. See [Azure DevOps setup](#azure-devops-server-and-services). The checkout must be clean, on a named branch, and match its remote branch tip. Commit shared project settings from `/setup-review` so they exist on new worktrees.
 4. Issue a repository-restricted Hub token with `findings:read` and `findings:implement` (optionally also `reviews:write` for publishing). Save it using the existing terminal login helper; never paste it into Copilot chat:
 
 ```text
@@ -37,6 +37,31 @@ Then use either:
 Without a filter, all queued open findings for this configured project are selected. Each runs sequentially in an isolated worktree on `feature/<short-ID>`, from the original checkout's commit. The remote branch is created before edits. A passing independent revalidation allows an explicit-file commit; a second revalidation of that clean commit precedes pushing and creating a PR to the original branch. Only then is the Hub finding resolved, unqueued and given a factual summary/PR link. **Resolved on the feature branch does not mean merged or deployed.** Nothing automatically merges a PR or resolves Jira.
 
 Failures keep the finding open and queued with a reason when the Hub claim is still valid. Existing feature branches block rather than being overwritten. Cancellation, edited proposals and newer imported reviews invalidate stale workers. Worktrees/branches are retained for inspection; uncertain Hub writes retry the identical saved completion. See [recovery, permissions and API details](docs/finding_implementation_workflow.md).
+
+### Azure DevOps Server and Services
+
+Update the `.github` kit in the reviewed project and deploy/restart the updated Hub. This adapter adds no database migration beyond the existing implementation migration. Git still handles branches/commits/pushes with your configured credentials; only PR operations use the hosting API. The Hub does not receive Azure credentials.
+
+For Azure DevOps Server 2020, configure this once in Copilot chat (replace the placeholder with the collection part of your Git remote, excluding `/Project/_git/repository`):
+
+```text
+/configure-review git-provider=azure-devops azure-api-version=6.0 azure-devops-url=https://ado.example.invalid/CollectionName azure-auth=windows
+/doctor-review network=true
+```
+
+`/setup-review` can also guide this configuration. The terminal installer wizard offers these choices when a Hub is configured. Host, collection, project and repository names are not hard-coded; `git-provider=auto` detects Azure's `/_git/` URL structure. Shared provider/version settings belong to the project; trusted collection URL and authentication preference stay in the user's settings outside Git. Commit changed project settings before implementation.
+
+The Windows API bridge uses the signed-in Windows identity through PowerShell/.NET, with no password/PAT needed when the server accepts that identity. Git's successful authentication alone does not prove API access. The explicit read-only check can also be run directly:
+
+```powershell
+.\.graphify-review-venv\Scripts\python.exe .github\graphify-review\scripts\azure_devops.py check --repository .
+```
+
+The bridge uses Windows certificate trust, saved/environment proxy and `NO_PROXY`; it does not import a PEM file into Windows, read Git credentials, enable proxy Windows credentials automatically, bypass script execution policy or disable TLS. Ask IT to provision trusted corporate certificates/approve the supplied `.ps1` if needed. For an internal host, configure proxy bypass only if your network permits direct access. A read-only success confirms repository access, not permission to push/create PRs.
+
+If Windows authentication is unavailable, select `azure-auth=pat` and use your own terminal to run `azure_devops.py login` with the review Python interpreter. This saves a PAT in native OS credential storage for that collection only. Use least-privilege Code read/write access and repository PR permissions. Never paste it into chat or settings. PAT transport supports macOS/Linux too and uses the saved PEM/proxy configuration. For approved secret-manager use, `GRAPHIFY_AZURE_PAT` requires a matching `GRAPHIFY_AZURE_PAT_URL`; it does not reuse the Hub token. `azure-auth=auto` chooses Windows identity on Windows for on-premises hosts, PAT otherwise; authentication errors never silently switch modes.
+
+Then use `/implement-findings` as usual. Azure creates an active PR to the original branch, verifies the exact source commit and repository, and never enables auto-completion. An uncertain create response is recovered using the same saved attempt; the adapter refuses to blindly POST a second PR. API 6.0 is the default for Server 2020 compatibility; 7.0/7.1 are optional for newer deployments. GitHub support is preserved; GitLab/Bitbucket and Azure SSH remotes are not yet supported by the PR adapter. See [workflow details](docs/finding_implementation_workflow.md#hosting-adapters).
 
 ## Guided setup (recommended)
 

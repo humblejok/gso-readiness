@@ -318,6 +318,27 @@ def test_new_activity_contract_copies_match():
     assert (root / ".github/graphify-review/scripts/targeted_contract.py").read_bytes() == (
         root / "hub/hubapp/targeted_contract.py"
     ).read_bytes()
+    assert (root / ".github/graphify-review/scripts/git_host_contract.py").read_bytes() == (
+        root / "hub/hubapp/git_host_contract.py"
+    ).read_bytes()
+
+
+def test_azure_pr_success_is_recorded_and_other_repositories_are_refused(org, finding, envelope):
+    with tenant_scope(org.id):
+        clone = "https://ado.example.invalid/tfs/Collection/Project%20Name/_git/repo"
+        finding.repository.clone_url = clone
+        finding.repository.save()
+        _, attempt = queued_claim(finding)
+        body = complete_body(report_for(finding, envelope))
+        for url in (clone.replace("/repo", "/other") + "/pullrequest/7", clone + "/pull/7", clone + "/pullrequest/7?secret=x"):
+            body["pull_request"] = url
+            with pytest.raises(finding_work.ValidationError):
+                finding_work.complete(finding.id, attempt.id, body, "worker")
+        body["pull_request"] = clone + "/pullrequest/7"
+        result = finding_work.complete(finding.id, attempt.id, body, "worker")
+        assert result["result"] == {"lifecycle": "resolved", "to_implement": False}
+        assert "not yet merged" in result["comment"]
+        assert finding_work.complete(finding.id, attempt.id, body, "worker") == result
 
 
 def test_documented_targeted_schema_accepts_result_and_rejects_fake_grade(finding, envelope):

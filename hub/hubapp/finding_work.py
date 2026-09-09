@@ -1,10 +1,8 @@
 """Tenant-serialized queue, claim and targeted-result transitions. No code runs on the Hub."""
 
 import json
-import re
 import uuid
 from datetime import timedelta
-from urllib.parse import urlsplit
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -12,6 +10,7 @@ from django.db.models import F
 from django.utils import timezone
 
 from .contracts import render_remediation
+from .git_host_contract import HostError, validate_pr_url
 from .models import Finding, FindingActivity, Observation, Organization
 from .services import audit, require_writes, usage
 from .targeted_contract import TargetedError, bounded, digest, validate_targeted
@@ -224,27 +223,10 @@ def complete(finding_id, attempt_id, body, actor):
     if not all(isinstance(body[key], str) for key in ("pull_request", "commit_sha", "base_branch")):
         raise ValidationError("Invalid branch/commit/PR metadata.")
     if body["pull_request"]:
-        pr = urlsplit(body["pull_request"])
-        if (
-            pr.scheme != "https"
-            or not pr.hostname
-            or pr.username
-            or pr.password
-            or pr.query
-            or pr.fragment
-            or len(body["pull_request"]) > 1000
-            or not re.fullmatch(r"/[^/]+/[^/]+/pull/[0-9]+", pr.path)
-        ):
-            raise ValidationError("Use a credential-free HTTPS pull request URL.")
-        if finding.repository.clone_url:
-            clone = urlsplit(finding.repository.clone_url)
-            repository_path = clone.path.rstrip("/").removesuffix(".git")
-            if pr.netloc.lower() != clone.netloc.lower() or not pr.path.lower().startswith(
-                repository_path.lower() + "/pull/"
-            ):
-                raise ValidationError(
-                    "Pull request belongs to a different repository than the configured clone URL."
-                )
+        try:
+            validate_pr_url(body["pull_request"], finding.repository.clone_url)
+        except HostError as exc:
+            raise ValidationError(str(exc)) from exc
     payload_hash = digest(body)
     if (
         attempt.status in {"succeeded", "failed"}
@@ -267,7 +249,6 @@ def complete(finding_id, attempt_id, body, actor):
     if body["outcome"] == "succeeded":
         report = body["report"]
         check_report(finding, report, latest)
-        pr = urlsplit(body["pull_request"])
         if (
             report["result"]["status"] != "resolved"
             or report["source"]["dirty"]
@@ -275,14 +256,7 @@ def complete(finding_id, attempt_id, body, actor):
             or report["source"]["branch"] != "feature/" + finding.display_id
             or not bounded(body["base_branch"], 200)
             or body["base_branch"] == report["source"]["branch"]
-            or pr.scheme != "https"
-            or not pr.hostname
-            or pr.username
-            or pr.password
-            or pr.query
-            or pr.fragment
-            or len(body["pull_request"]) > 1000
-            or not re.fullmatch(r"/[^/]+/[^/]+/pull/[0-9]+", pr.path)
+            or not body["pull_request"]
         ):
             raise ValidationError(
                 "Success requires a clean, resolved feature-branch revalidation, matching commit and a pull request to the original branch."

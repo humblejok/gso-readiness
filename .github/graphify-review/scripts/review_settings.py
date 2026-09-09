@@ -14,11 +14,12 @@ from urllib.parse import urlsplit
 
 PROJECT_KEYS = {
     "repository_id", "repository_name", "default_branch", "profile", "security_scanner",
-    "artifactory_repositories",
+    "artifactory_repositories", "git_provider", "azure_api_version",
 }
 USER_KEYS = {
     "hub_url", "jfrog_server_id", "jfrog_url", "proxy_url", "no_proxy", "ca_bundle",
     "pip_index_url", "java_truststore", "java_truststore_type", "jfrog_cli_path", "jfrog_releases_repo",
+    "azure_devops_url", "azure_auth",
 }
 DEFAULT_PROJECT = {"profile": "generic", "security_scanner": "auto", "artifactory_repositories": []}
 INSTALLER_KEYS = {
@@ -102,8 +103,20 @@ def validate_section(scope: str, data: dict) -> dict:
             if key in {"profile", "security_scanner"}:
                 raise SettingsError(f"{key} cannot be blank; unset it to restore the default.")
             continue
-        if key in {"hub_url", "jfrog_url", "proxy_url", "pip_index_url"}:
+        if key in {"hub_url", "jfrog_url", "proxy_url", "pip_index_url", "azure_devops_url"}:
             validate_url(value, key)
+        if key == "azure_devops_url":
+            from git_host_contract import collection_url
+            try:
+                collection_url(value)
+            except ValueError as exc:
+                raise SettingsError("Invalid Azure DevOps trusted collection URL.") from exc
+        if key == "git_provider" and value not in {"auto", "github", "azure-devops"}:
+            raise SettingsError("Git provider must be auto, github or azure-devops.")
+        if key == "azure_api_version" and value not in {"6.0", "7.0", "7.1"}:
+            raise SettingsError("Azure API version must be 6.0 (Server 2020), 7.0 or 7.1.")
+        if key == "azure_auth" and value not in {"auto", "windows", "pat"}:
+            raise SettingsError("Azure authentication must be auto, windows or pat.")
         if key == "jfrog_server_id" and not SAFE_ID.fullmatch(value):
             raise SettingsError("JFrog server ID must contain only letters, digits, dots, underscores or hyphens.")
         if key == "jfrog_releases_repo" and not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", value):

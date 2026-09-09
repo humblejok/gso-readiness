@@ -467,7 +467,7 @@
       },
       "post": {
         "operationId": "claimOrCompleteFindingImplementation",
-        "description": "Requires findings:read AND findings:implement. Claim uses a unique request UUID and current revision, freezes the proposal and grants a four-hour exclusive lease. Complete binds the same token actor and appends history. Exact retries replay; cancelled, expired, changed or superseded state conflicts. Success resolves on an unmerged feature branch only; no project-grade or Jira update. The client must independently verify source and PR; the Hub does not call GitHub.",
+        "description": "Requires findings:read AND findings:implement. Claim uses a unique request UUID and current revision, freezes the proposal and grants a four-hour exclusive lease. Complete binds the same token actor and appends history. Exact retries replay; cancelled, expired, changed or superseded state conflicts. Success resolves on an unmerged feature branch only; no project-grade or Jira update. GitHub /pull/{number} and Azure DevOps /_git/{repo}/pullrequest/{number} HTTPS URLs are accepted and bound to the configured clone URL. The client must independently verify source and PR; the Hub does not call either Git host.",
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ImplementationRequest"}}}},
         "responses": {
           "200": {"description": "Claim replay (context, attempt_id, expires_at) or completion (activity_id, status, finding_id, comment, result lifecycle/to_implement)"},

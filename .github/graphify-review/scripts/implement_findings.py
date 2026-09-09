@@ -8,9 +8,11 @@ import sys
 import tempfile
 import uuid
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from export_review import KIT_ROOT, read_json, write_new_json
+from azure_devops import AzureError
+from git_host_contract import HostError, repository_host
+from git_providers import describe, provider_for
 from hub_findings import context, request_json
 from publish_review import PublishError, configured_hub
 from revalidate_finding import source
@@ -30,7 +32,7 @@ def run(root, *command):
         environment.update(GIT_TERMINAL_PROMPT="0", GH_PROMPT_DISABLED="1")
         result = subprocess.run(command, cwd=root, env=environment, capture_output=True, timeout=60, check=False)
         if result.returncode:
-            raise WorkError(f"{command[0]} operation failed. Check local Git/GitHub authentication and branch permissions; raw output is suppressed.")
+            raise WorkError(f"{command[0]} operation failed. Check local Git/hosting authentication and branch permissions; raw output is suppressed.")
         output = result.stdout.decode("utf-8", errors="strict")
         return output if "-z" in command else output.strip()
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -38,23 +40,33 @@ def run(root, *command):
 
 
 def github_repository(url):
-    if url.startswith("git@"):
-        match = re.fullmatch(r"git@([A-Za-z0-9.-]+):([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", url)
-        if not match:
-            raise WorkError("Use a GitHub HTTPS or git@host:owner/repository remote.")
-        host, owner, name = match.groups()
-    else:
-        parsed = urlsplit(url)
-        if parsed.scheme != "https" or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.port:
-            raise WorkError("Use a credential-free GitHub HTTPS or SSH remote, not an embedded access token.")
-        match = re.fullmatch(r"/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)/?", parsed.path)
-        if not match or not parsed.hostname:
-            raise WorkError("GitHub remote must identify one owner/repository.")
-        host, (owner, name) = parsed.hostname, match.groups()
-    name = name.removesuffix(".git")
-    if owner in {".", ".."} or name in {"", ".", ".."}:
-        raise WorkError("Invalid GitHub repository path.")
-    return f"{host.lower()}/{owner}/{name}"
+    # Compatibility for existing callers; new workflow uses describe/provider_for.
+    try:
+        return repository_host(url, "github")["github_repository"]
+    except HostError as exc:
+        raise WorkError(str(exc)) from exc
+
+
+def hosting(state):
+    # Resume pre-adapter GitHub states without rewriting their identity.
+    if "hosting" not in state:
+        state["hosting"] = repository_host("https://" + state["github_repository"])
+    return state["hosting"]
+
+
+def bound_provider(state):
+    root, host = Path(state["root"]), hosting(state)
+    current = describe(root, state["remote"], run)
+    if any(current.get(key) != value for key, value in host.items() if key != "repository_uuid"):
+        raise WorkError("Git remote/provider settings changed since this attempt was planned. No remote write was made.")
+    # Push URLs can differ from fetch URLs. Never send code to a different host/repo.
+    for checkout in {root, Path(state["worktree"])}:
+        if not checkout.exists():
+            continue
+        push_urls = run(checkout, "git", "remote", "get-url", "--push", "--all", state["remote"]).splitlines()
+        if len(push_urls) != 1 or repository_host(push_urls[0])["clone_url"].casefold() != host["clone_url"].casefold():
+            raise WorkError("Push destination differs from the selected repository or is ambiguous. Check Git remote configuration.")
+    return provider_for(root, host, run)
 
 
 def remote_sha(root, remote, branch):
@@ -90,13 +102,13 @@ def plan(args):
     remote = args.remote
     if not re.fullmatch(r"[A-Za-z0-9_-]+", remote):
         raise WorkError("Invalid remote name.")
-    github = github_repository(run(root, "git", "remote", "get-url", remote))
+    host = describe(root, remote, run)
     hub = configured_hub(root)
     item = context(root, args.finding, hub)
     short_id = item["display_id"]
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,99}", short_id):
         raise WorkError("Finding ID cannot safely form a feature branch name.")
-    if item.get("clone_url") and github_repository(item["clone_url"]).lower() != github.lower():
+    if item.get("clone_url") and repository_host(item["clone_url"])["clone_url"].casefold() != host["clone_url"].casefold():
         raise WorkError("This checkout's Git remote differs from the Hub project's clone URL.")
     if item["lifecycle"] != "open" or not item["to_implement"]:
         raise WorkError("Finding is not open and marked to implement.")
@@ -106,7 +118,7 @@ def plan(args):
     write_new_json(directory / "baseline-review.json", baseline["payload"]["review"])
     state = {"schema_version": "1.0", "root": str(root), "hub_url": hub, "item": item,
              "base_branch": base, "base_commit": commit, "branch": "feature/" + short_id,
-             "remote": remote, "github_repository": github, "request_id": str(uuid.uuid4()),
+             "remote": remote, "hosting": host, "request_id": str(uuid.uuid4()),
              "worktree": str(directory / "worktree"), "stage": "planned"}
     path = directory / "state.json"
     write_new_json(path, state)
@@ -129,8 +141,8 @@ def start(path, state):
     save(path, state)
     if claimed["baseline_observation_id"] != state["item"]["baseline_observation_id"]:
         raise WorkError("Baseline changed before the claim. Do not implement the old proposal.")
-    host = state["github_repository"].split("/", 1)[0]
-    run(root, "gh", "auth", "status", "--hostname", host)
+    bound_provider(state).preflight()
+    save(path, state)
     if remote_sha(root, state["remote"], state["base_branch"]) != state["base_commit"]:
         raise WorkError("Original checkout is not at the remote target branch tip. Update it manually and create a new attempt.")
     remote_head = remote_sha(root, state["remote"], state["branch"])
@@ -230,6 +242,9 @@ def deliver(path, state, args):
     if report["source"]["commit_sha"] != state["commit_sha"]:
         raise WorkError("Commit changed after revalidation.")
     tree = Path(state["worktree"])
+    provider = bound_provider(state)
+    provider.preflight()
+    save(path, state)
     # Refresh claim before any further remote write; cancellation/edits invalidate it.
     claimed = api(state, {"action": "claim", "revision": state["item"]["revision"], "request_id": state["request_id"]})
     if claimed["attempt_id"] != state["attempt_id"]:
@@ -241,28 +256,12 @@ def deliver(path, state, args):
         run(tree, "git", "push", state["remote"], "HEAD:refs/heads/" + state["branch"])
         state["stage"] = "pushed"
         save(path, state)
-    gh = state["github_repository"]
     if state["stage"] == "pushed":
-        matches = json.loads(run(tree, "gh", "pr", "list", "--repo", gh, "--head", state["branch"], "--base", state["base_branch"], "--state", "all", "--json", "url,state,headRefOid"))
-        if matches:
-            if len(matches) != 1 or matches[0]["state"] != "OPEN" or matches[0]["headRefOid"] != state["commit_sha"]:
-                raise WorkError("An incompatible PR already exists. Inspect it; do not create a duplicate.")
-            url = matches[0]["url"]
-        else:
-            body_path = path.parent / "pr-body.txt"
-            if not body_path.exists():
-                with body_path.open("x", encoding="utf-8") as handle:
-                    handle.write(text + "\n\nTargeted revalidation passed for " + state["item"]["display_id"] + ". Other findings and whole-project grades were not reassessed.\n")
-            url = run(tree, "gh", "pr", "create", "--repo", gh, "--head", state["branch"], "--base", state["base_branch"], "--title", "Implement " + state["item"]["display_id"], "--body-file", str(body_path))
-        if not re.fullmatch(re.escape("https://" + gh + "/pull/") + r"[0-9]+", url):
-            raise WorkError("GitHub returned an unexpected PR destination. No Hub resolution was sent.")
+        url = provider.ensure_pr(state, path, text, save)
         state["pull_request"] = url
         state["stage"] = "pr_created"
         save(path, state)
-    pr = json.loads(run(tree, "gh", "pr", "view", state["pull_request"], "--repo", gh, "--json", "url,state,headRefName,baseRefName,headRefOid"))
-    if (pr["state"] != "OPEN" or pr["baseRefName"] != state["base_branch"] or pr["headRefName"] != state["branch"]
-            or pr["headRefOid"] != state["commit_sha"] or pr["url"] != state["pull_request"]):
-        raise WorkError("PR no longer matches the validated source/target. Hub remains unchanged.")
+    provider.verify(state)
     store_completion(path, state, {"outcome": "succeeded", "comment": text, "report": report,
                                   "pull_request": state["pull_request"], "commit_sha": state["commit_sha"], "base_branch": state["base_branch"]})
     return sync(path, state)
@@ -304,6 +303,8 @@ def main(argv=None):
             elif args.action == "fail":
                 if not state.get("attempt_id") or state["stage"] in {"completion_pending", "completed"}:
                     raise WorkError("No active claim, or completion already pending. Use sync for an uncertain completion.")
+                if state.get("pr_submission_started") and not state.get("pull_request"):
+                    raise WorkError("Azure PR creation outcome is uncertain. Retry deliver with the same state/report/summary or inspect the server; do not replace it with a failure.")
                 store_completion(path, state, {"outcome": "failed", "comment": summary(args.summary_file), "report": None,
                                               "pull_request": state.get("pull_request", ""), "commit_sha": state.get("commit_sha", ""), "base_branch": state["base_branch"]})
                 result = sync(path, state)
@@ -312,7 +313,7 @@ def main(argv=None):
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except Exception as exc:  # Sanitized tool/credential boundary; preserve all source and branches.
-        message = str(exc) if isinstance(exc, (WorkError, PublishError)) else "Implementation operation blocked. Inspect saved state and inputs; no destructive cleanup was attempted."
+        message = str(exc) if isinstance(exc, (WorkError, PublishError, HostError, AzureError)) else "Implementation operation blocked. Inspect saved state and inputs; no destructive cleanup was attempted."
         print(json.dumps({"status": "blocked", "state": args.state, "message": message}), file=sys.stderr)
         return 2
     finally:

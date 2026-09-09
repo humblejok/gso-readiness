@@ -1,7 +1,7 @@
 ---
 name: configure-review
 description: View or change saved project, Hub, JFrog, proxy and certificate settings without editing JSON manually.
-argument-hint: "[hub-url=https://hub.example.com] [jfrog-server=corp-xray] [jfrog-url=https://jfrog.example.com] [profile=auto] [preset=path/to/company.json]"
+argument-hint: "[hub-url=url] [jfrog-server=corp-xray] [profile=auto] [git-provider=auto|github|azure-devops] [azure-devops-url=collection-url] [azure-auth=auto|windows|pat] [azure-api-version=6.0] [preset=path/to/company.json]"
 agent: Review Setup Manager
 ---
 

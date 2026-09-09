@@ -15,6 +15,7 @@ import implement_findings as work  # noqa: E402
 from publish_review import PublishError  # noqa: E402
 from revalidate_finding import source  # noqa: E402
 from targeted_contract import digest  # noqa: E402
+from git_host_contract import HostError  # noqa: E402
 
 
 def git(root, *args):
@@ -51,7 +52,7 @@ class ImplementationTests(unittest.TestCase):
         self.fail_sync = False
         original_run = work.run
         def fake_run(root, *command):
-            if command[:4] == ("git", "remote", "get-url", "origin"):
+            if command[:3] == ("git", "remote", "get-url"):
                 return "git@github.example.invalid:team/orders.git"
             if command[:3] == ("gh", "auth", "status"):
                 return ""
@@ -203,10 +204,77 @@ class ImplementationTests(unittest.TestCase):
                 result = json.dumps({**json.loads(result), "headRefOid": "f" * 40})
             return result
         with mock.patch.object(work, "run", side_effect=altered):
-            with self.assertRaisesRegex(work.WorkError, "PR no longer matches"):
+            with self.assertRaisesRegex(HostError, "PR no longer matches"):
                 work.deliver(path, state, args)
         self.assertEqual(self.completions, [])
         self.assertFalse((path.parent / "completion.json").exists())
+
+    def test_azure_end_to_end_uses_git_not_gh_and_original_base(self):
+        import git_providers
+        clone = "https://ado.example.invalid/Collection/Project/_git/orders"
+        repo_id = str(uuid.uuid4())
+        previous_run = work.run
+        requests = []
+        def git_only(root, *command):
+            self.assertNotEqual(command[0], "gh", "Azure must never require gh")
+            if command[:3] == ("git", "remote", "get-url"):
+                return clone
+            return previous_run(root, *command)
+        def azure_api(root, host, method, suffix="", query=None, data=None):
+            requests.append((method, suffix, data))
+            self.assertEqual(host["api_version"], "6.0")
+            if suffix == "":
+                return {"id": repo_id, "remoteUrl": clone}
+            if method == "GET" and suffix == "/pullrequests":
+                return {"count": 0, "value": []}
+            if method == "POST":
+                self.assertEqual(data["targetRefName"], "refs/heads/main")
+                self.assertEqual(data["sourceRefName"], "refs/heads/" + state["branch"])
+            return {"pullRequestId": 19, "status": "active", "sourceRefName": "refs/heads/" + state["branch"],
+                    "targetRefName": "refs/heads/main", "repository": {"id": repo_id},
+                    "lastMergeSourceCommit": {"commitId": state["commit_sha"]}}
+        with mock.patch.object(work, "run", side_effect=git_only), mock.patch.object(git_providers, "request", side_effect=azure_api):
+            path, state, args = self.committed()
+            self.assertEqual(work.remote_sha(self.root, "origin", state["branch"]), self.original_commit)
+            result = work.deliver(path, state, args)
+        self.assertEqual(result["stage"], "completed")
+        self.assertEqual(git(self.root, "rev-parse", "HEAD"), self.original_commit)
+        self.assertEqual(git(self.root, "branch", "--show-current"), "main")
+        self.assertEqual(self.completions[0]["completion"]["pull_request"], clone + "/pullrequest/19")
+        self.assertEqual(sum(method == "POST" for method, _, _ in requests), 1)
+        self.assertEqual(self.pr_calls, 0)
+
+    def test_changed_push_destination_blocks_before_branch_creation(self):
+        path, state = self.plan()
+        previous_run = work.run
+        def changed_push(root, *command):
+            if "--push" in command:
+                return "https://other.example.invalid/org/repo"
+            return previous_run(root, *command)
+        with mock.patch.object(work, "run", side_effect=changed_push):
+            with self.assertRaisesRegex(work.WorkError, "Push destination"):
+                work.start(path, state)
+        self.assertFalse(Path(state["worktree"]).exists())
+
+    def test_legacy_github_attempt_can_resume(self):
+        path, state = self.plan()
+        state["github_repository"] = state.pop("hosting")["github_repository"]
+        work.save(path, state)
+        result = work.start(path, state)
+        self.assertEqual(result["stage"], "started")
+        self.assertEqual(state["hosting"]["provider"], "github")
+
+    def test_uncertain_azure_pr_cannot_be_replaced_by_failure(self):
+        path, state = self.plan()
+        work.start(path, state)
+        state["pr_submission_started"] = True
+        state["stage"] = "pushed"
+        work.save(path, state)
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            self.assertEqual(work.main(["fail", "--repository", str(self.root), "--state", str(path), "--summary-file", "unused"]), 2)
+        self.assertIn("outcome is uncertain", stderr.getvalue())
+        self.assertFalse((path.parent / "completion.json").exists())
+        self.assertFalse(self.completions)
 
 
 if __name__ == "__main__":

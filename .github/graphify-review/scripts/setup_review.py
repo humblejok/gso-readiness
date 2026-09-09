@@ -126,6 +126,19 @@ def configure(args) -> dict:
         user["jfrog_url"] = ask("JFrog platform URL (optional; credentials stay in JFrog CLI)", user.get("jfrog_url", servers.get(user["jfrog_server_id"], "")))
         project["artifactory_repositories"] = [value.strip() for value in ask("Artifactory repository keys, comma-separated (optional)", ",".join(project.get("artifactory_repositories", []))).split(",") if value.strip()]
         user["hub_url"] = ask("Finding Hub URL (optional; no automatic uploads)", user.get("hub_url", ""))
+        if user["hub_url"]:
+            project["git_provider"] = ask("Implementation Git host: auto, github, azure-devops", project.get("git_provider", "auto"), True)
+            _, remote_url = probe(["git", "remote", "get-url", "origin"], repository, environment)
+            try:
+                from git_host_contract import repository_host
+                host = repository_host(remote_url.strip(), project["git_provider"])
+            except ValueError:
+                host = {}
+            if project["git_provider"] == "azure-devops" or host.get("provider") == "azure-devops":
+                print("Git keeps its existing authentication. API calls require a separately trusted collection URL; no authentication is attempted during setup.")
+                user["azure_devops_url"] = ask("Confirm trusted Azure collection URL (not repository URL)", user.get("azure_devops_url", host.get("collection_url", "")), True)
+                user["azure_auth"] = ask("Azure API authentication: auto, windows, pat", user.get("azure_auth", "auto"), True)
+                project["azure_api_version"] = ask("Azure API version: 6.0 (Server 2020), 7.0, 7.1", project.get("azure_api_version", "6.0"), True)
         corporate = any(user.get(key) for key in ("proxy_url", "ca_bundle", "pip_index_url", "java_truststore"))
         if ask("Configure corporate proxy/certificates? yes/no", "yes" if corporate else "no").lower() in {"yes", "y"}:
             for key, label in (
@@ -208,6 +221,7 @@ def doctor(args) -> dict:
     check("copilot", "info", "In VS Code, verify Copilot is installed and signed in, and this project is trusted. This diagnostic cannot verify your Copilot entitlement/session.")
     if settings["user"].get("hub_url"):
         check("hub_publishing", "info", "Hub destination configured. Use /publish-review for explicit uploads and automatic project creation in an existing workspace. First run publish_review.py login in your own terminal after bootstrap. This diagnostic does not read your credential store or verify token permissions.")
+        check("implementation_hosting", "info", "Git uses existing credentials. Azure DevOps needs no gh/Azure CLI: confirm azure_devops_url and azure_auth with /configure-review, then explicitly run azure_devops.py check for read-only API authentication. GitHub requires authenticated gh. Normal doctor checks do not load API credentials.")
     servers = jfrog_servers(repository, environment)
     server = settings["user"].get("jfrog_server_id") or environment.get("JFROG_CLI_SERVER_ID")
     if server:

@@ -40,6 +40,30 @@ class ReviewSettingsTests(unittest.TestCase):
         self.assertEqual(result["project"]["profile"], "generic")
         self.assertFalse(self.project.exists())
 
+    def test_azure_configuration_accepts_generic_host_and_rejects_secrets_and_versions(self):
+        code, _ = self.invoke("configure", "--non-interactive", "--set", "project.git_provider=azure-devops", "--set", "project.azure_api_version=6.0", "--set", "user.azure_devops_url=https://ado.example.invalid/tfs/Collection", "--set", "user.azure_auth=windows")
+        self.assertEqual(code, 0)
+        saved = settings.load_settings(self.repository)
+        self.assertEqual(saved["project"]["azure_api_version"], "6.0")
+        self.assertEqual(saved["user"]["azure_auth"], "windows")
+        self.assertNotIn("azure_auth", self.project.read_text())
+        for assignment in ("user.azure_pat=secret", "user.azure_auth=ntlm-password", "project.git_provider=tfs-custom", "project.azure_api_version=99.0", "user.azure_devops_url=https://token@host/Collection", "user.azure_devops_url=https://host/Collection/%2e%2e"):
+            self.assertEqual(self.invoke("configure", "--non-interactive", "--set", assignment)[0], 2)
+
+    def test_azure_wizard_confirms_collection_and_windows_choice_without_network(self):
+        values = {"Project name": "Orders", "Stable project ID": "repo:orders", "Default branch": "main", "Review profile": "generic",
+                  "Security scanner": "auto", "Finding Hub URL": "https://hub.example.invalid", "Implementation Git host": "auto",
+                  "Confirm trusted Azure collection URL": "https://ado.example.invalid/Collection", "Azure API authentication": "windows",
+                  "Azure API version": "6.0", "Configure corporate": "no", "Save these settings": "yes"}
+        def answer(prompt):
+            return next((value for label, value in values.items() if prompt.startswith(label)), "")
+        def probe(command, *args):
+            return (0, "https://ado.example.invalid/Collection/Project/_git/orders") if command[1:3] == ["remote", "get-url"] else (1, "")
+        with mock.patch("sys.stdin.isatty", return_value=True), mock.patch("builtins.input", side_effect=answer), mock.patch.object(setup, "probe", side_effect=probe), mock.patch.object(setup, "jfrog_servers", return_value={}), mock.patch.object(setup.urllib.request, "build_opener") as network:
+            self.assertEqual(self.invoke("configure")[0], 0)
+            network.assert_not_called()
+        self.assertEqual(settings.load_settings(self.repository)["user"]["azure_auth"], "windows")
+
     def test_noninteractive_config_preserves_unrelated_settings_and_makes_backups(self):
         self.assertEqual(self.invoke("configure", "--non-interactive", "--set", "project.profile=spring-boot", "--set", "user.hub_url=https://hub.example.com")[0], 0)
         self.assertEqual(self.invoke("configure", "--non-interactive", "--set", "user.hub_url=https://other.example.com")[0], 0)
