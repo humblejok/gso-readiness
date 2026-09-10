@@ -3,7 +3,40 @@ import re
 from django import forms
 from django.contrib.auth.forms import UserCreationForm
 
-from .models import User
+from .models import ChangeRequest, User, UserApiToken
+
+
+class UserTokenForm(forms.Form):
+    name = forms.CharField(max_length=100)
+    scopes = forms.MultipleChoiceField(
+        choices=UserApiToken.SCOPES, widget=forms.CheckboxSelectMultiple
+    )
+    days = forms.IntegerField(min_value=1, max_value=365, initial=30, label="Expires after days")
+    confirm = forms.BooleanField(
+        label="I understand these scopes apply to every workspace on this Hub, not just my memberships."
+    )
+
+
+class ChangeRequestForm(forms.Form):
+    kind = forms.ChoiceField(choices=ChangeRequest.Kind.choices, label="Type")
+    description = forms.CharField(
+        max_length=20000,
+        widget=forms.Textarea(attrs={"rows": 10}),
+        help_text="Describe the bug and expected behavior, or the feature you would like. Maximum 20,000 characters.",
+    )
+
+
+class ChangeRequestEditForm(ChangeRequestForm):
+    revision = forms.IntegerField(
+        min_value=1, widget=forms.HiddenInput(attrs={"id": "edit_revision"})
+    )
+
+
+class ChangeRequestTransitionForm(forms.Form):
+    revision = forms.IntegerField(
+        min_value=1, widget=forms.HiddenInput(attrs={"id": "transition_revision"})
+    )
+    status = forms.ChoiceField(choices=ChangeRequest.Status.choices, widget=forms.HiddenInput)
 
 
 class SignupForm(UserCreationForm):

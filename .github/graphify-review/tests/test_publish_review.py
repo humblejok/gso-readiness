@@ -47,6 +47,16 @@ def envelope_fixture():
 
 
 class PublishReviewTests(unittest.TestCase):
+    def test_personal_token_workspace_selection_and_response_binding(self):
+        self.settings["project"] = {"hub_workspace_id": self.reply["organization_id"]}
+        result = self.publish()
+        request = self.opener.open.call_args.args[0]
+        self.assertEqual(request.get_header("X-workspace-id"), self.reply["organization_id"])
+        self.assertEqual(result["hub_workspace_id"], self.reply["organization_id"])
+        self.settings["project"]["hub_workspace_id"] = str(uuid.uuid4())
+        with self.assertRaisesRegex(publisher.PublishError, "workspace ID"):
+            self.publish()
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -215,6 +225,13 @@ class PublishReviewTests(unittest.TestCase):
         self.assertIn("warning", result)
         self.assertNotIn(TOKEN, str(result))
 
+    def test_other_project_envelope_is_blocked_before_credentials(self):
+        self.settings["project"] = {"repository_id": "repo:different-project", "hub_credential_ref": "default"}
+        with self.assertRaisesRegex(publisher.PublishError, "different project"):
+            self.publish()
+        self.keyring.get_password.assert_not_called()
+        self.opener_factory.assert_not_called()
+
     def test_environment_token_must_be_bound_to_destination(self):
         with mock.patch.dict(os.environ, {"FINDING_HUB_TOKEN": TOKEN}):
             for url in ("", "https://other.example.invalid", "https://hub.example.invalid/other"):
@@ -240,14 +257,18 @@ class PublishReviewTests(unittest.TestCase):
                 publisher.validate_token(token)
 
     def test_login_is_interactive_hidden_and_has_no_network(self):
+        from credential_refs import slot
+        self.settings["project"] = {"repository_id": "repo:orders", "hub_credential_ref": "reviewer"}
         with mock.patch("sys.stdin.isatty", return_value=True), mock.patch.object(getpass, "getpass", return_value=TOKEN), contextlib.redirect_stdout(io.StringIO()) as out:
             result = publisher.credential_action("login", self.root)
         self.assertEqual(result["status"], "credential_saved")
         self.assertNotIn(TOKEN, out.getvalue() + str(result))
-        self.keyring.set_password.assert_called_once_with("graphify-review-hub:" + HUB, "workspace-token", TOKEN)
+        selected = slot("hub", HUB, self.settings["project"])
+        self.keyring.set_password.assert_called_once_with(selected["service"], "workspace-token", TOKEN)
         self.opener_factory.assert_not_called()
 
     def test_login_refuses_agent_tool_and_echo_fallback(self):
+        self.settings["project"] = {"repository_id": "repo:orders"}
         with mock.patch("sys.stdin.isatty", return_value=False):
             with self.assertRaisesRegex(publisher.PublishError, "own interactive terminal"):
                 publisher.credential_action("login", self.root)
@@ -260,10 +281,13 @@ class PublishReviewTests(unittest.TestCase):
         self.keyring.set_password.assert_not_called()
 
     def test_logout_removes_only_current_hub_credential(self):
+        from credential_refs import LOGGED_OUT, slot
+        self.settings["project"] = {"repository_id": "repo:orders"}
         with mock.patch("sys.stdin.isatty", return_value=True):
             result = publisher.credential_action("logout", self.root)
         self.assertEqual(result["status"], "logged_out")
-        self.keyring.delete_password.assert_called_once_with("graphify-review-hub:" + HUB, "workspace-token")
+        selected = slot("hub", HUB, self.settings["project"])
+        self.keyring.set_password.assert_called_once_with(selected["service"], "workspace-token", LOGGED_OUT)
         self.opener_factory.assert_not_called()
 
     def test_keyring_errors_are_sanitized(self):

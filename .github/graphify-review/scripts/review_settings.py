@@ -15,11 +15,12 @@ from urllib.parse import urlsplit
 PROJECT_KEYS = {
     "repository_id", "repository_name", "default_branch", "profile", "security_scanner",
     "artifactory_repositories", "git_provider", "azure_api_version",
+    "hub_credential_ref", "azure_credential_ref", "azure_auth", "hub_workspace_id",
 }
 USER_KEYS = {
     "hub_url", "jfrog_server_id", "jfrog_url", "proxy_url", "no_proxy", "ca_bundle",
     "pip_index_url", "java_truststore", "java_truststore_type", "jfrog_cli_path", "jfrog_releases_repo",
-    "azure_devops_url", "azure_auth",
+    "azure_devops_url", "azure_devops_collections", "azure_auth",
 }
 DEFAULT_PROJECT = {"profile": "generic", "security_scanner": "auto", "artifactory_repositories": []}
 INSTALLER_KEYS = {
@@ -31,6 +32,13 @@ SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 
 class SettingsError(ValueError):
     """User-facing configuration error; do not include input values."""
+
+
+def trusted_azure_collections(user):
+    """An explicit list (even empty) replaces legacy single-collection trust."""
+    from git_host_contract import collection_url
+    values = user["azure_devops_collections"] if "azure_devops_collections" in user else ([user["azure_devops_url"]] if user.get("azure_devops_url") else [])
+    return [collection_url(value) for value in values]
 
 
 def user_settings_path() -> Path:
@@ -90,6 +98,17 @@ def validate_section(scope: str, data: dict) -> dict:
     if not isinstance(data, dict) or set(data) - keys:
         raise SettingsError(f"Unknown {scope} settings. Tokens, passwords and arbitrary environment variables are not supported.")
     for key, value in data.items():
+        if key == "azure_devops_collections":
+            from git_host_contract import collection_url
+            if not isinstance(value, list) or len(value) > 100 or any(not isinstance(item, str) for item in value):
+                raise SettingsError("Approved Azure collections must be a list of at most 100 HTTPS collection URLs.")
+            try:
+                normalized = [collection_url(item) for item in value]
+            except ValueError as exc:
+                raise SettingsError("Approved Azure collections must contain exact credential-free HTTPS URLs, not patterns.") from exc
+            if len(normalized) != len(set(normalized)) or any("*" in item for item in value):
+                raise SettingsError("Approved Azure collections must be unique exact URLs, not wildcards.")
+            continue
         if key == "artifactory_repositories":
             if not isinstance(value, list) or any(not isinstance(item, str) or not SAFE_ID.fullmatch(item) for item in value):
                 raise SettingsError("Artifactory repositories must be a list of repository keys.")
@@ -103,6 +122,14 @@ def validate_section(scope: str, data: dict) -> dict:
             if key in {"profile", "security_scanner"}:
                 raise SettingsError(f"{key} cannot be blank; unset it to restore the default.")
             continue
+        if key in {"hub_credential_ref", "azure_credential_ref"} and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", value):
+            raise SettingsError("Credential references are non-secret labels of 1–64 letters/digits/dots/underscores/hyphens, not tokens or URLs.")
+        if key == "hub_workspace_id":
+            try:
+                if str(uuid.UUID(value)) != value:
+                    raise ValueError
+            except ValueError as exc:
+                raise SettingsError("Hub workspace ID must be a canonical lowercase UUID, not a repository ID.") from exc
         if key in {"hub_url", "jfrog_url", "proxy_url", "pip_index_url", "azure_devops_url"}:
             validate_url(value, key)
         if key == "azure_devops_url":

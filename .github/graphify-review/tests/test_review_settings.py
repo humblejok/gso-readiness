@@ -16,6 +16,13 @@ import setup_review as setup  # noqa: E402
 
 
 class ReviewSettingsTests(unittest.TestCase):
+    def test_workspace_selector_is_canonical_uuid(self):
+        valid = "00000000-0000-4000-8000-000000000001"
+        self.assertEqual(settings.validate_section("project", {"hub_workspace_id": valid})["hub_workspace_id"], valid)
+        for value in ("repo:orders", "../workspace", "{00000000-0000-4000-8000-000000000001}", "bad\r\nHeader: token"):
+            with self.assertRaises(settings.SettingsError):
+                settings.validate_section("project", {"hub_workspace_id": value})
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -39,6 +46,32 @@ class ReviewSettingsTests(unittest.TestCase):
         self.assertFalse(result["configured"])
         self.assertEqual(result["project"]["profile"], "generic")
         self.assertFalse(self.project.exists())
+
+    def test_approve_multiple_collections_migrates_legacy_and_removes_only_one(self):
+        one = "https://ado.example.invalid/One"
+        two = "https://ado.example.invalid/Two"
+        self.assertEqual(self.invoke("configure", "--non-interactive", "--set", "user.azure_devops_url=" + one)[0], 0)
+        self.assertEqual(self.invoke("configure", "--non-interactive", "--trust-azure-collection", two)[0], 0)
+        user = settings.load_settings(self.repository)["user"]
+        self.assertEqual(user["azure_devops_collections"], [one, two])
+        self.assertNotIn("azure_devops_url", user)
+        self.assertEqual(self.invoke("configure", "--non-interactive", "--trust-azure-collection", two)[0], 0)
+        self.assertEqual(self.invoke("configure", "--non-interactive", "--untrust-azure-collection", one)[0], 0)
+        self.assertEqual(settings.trusted_azure_collections(settings.load_settings(self.repository)["user"]), [two])
+        self.assertEqual(self.invoke("configure", "--non-interactive", "--set", "user.azure_devops_collections=")[0], 0)
+        self.assertEqual(settings.trusted_azure_collections(settings.load_settings(self.repository)["user"]), [])
+
+    def test_multi_collection_preset_and_nonsecret_project_refs(self):
+        preset = self.root / "company.json"
+        preset.write_text(json.dumps({"schema_version": "1.0", "project": {"git_provider": "auto", "hub_credential_ref": "default", "azure_credential_ref": "default"},
+                                      "user": {"azure_auth": "windows", "azure_devops_collections": ["https://ado.example.invalid/One", "https://ado.example.invalid/Two"]}}))
+        self.assertEqual(self.invoke("configure", "--non-interactive", "--preset", str(preset))[0], 0)
+        self.assertEqual(len(settings.load_settings(self.repository)["user"]["azure_devops_collections"]), 2)
+        self.assertEqual(self.invoke("configure", "--non-interactive", "--set", "project.azure_auth=pat", "--set", "project.hub_credential_ref=reviewer")[0], 0)
+        self.assertEqual(settings.load_settings(self.repository)["user"]["azure_auth"], "windows")
+        for assignment in ("user.azure_devops_collections=https://*.example.invalid/One", "user.azure_devops_collections=https://token@host/One",
+                           "project.hub_credential_ref=https://secret", "project.azure_credential_ref=not a label"):
+            self.assertEqual(self.invoke("configure", "--non-interactive", "--set", assignment)[0], 2)
 
     def test_azure_configuration_accepts_generic_host_and_rejects_secrets_and_versions(self):
         code, _ = self.invoke("configure", "--non-interactive", "--set", "project.git_provider=azure-devops", "--set", "project.azure_api_version=6.0", "--set", "user.azure_devops_url=https://ado.example.invalid/tfs/Collection", "--set", "user.azure_auth=windows")

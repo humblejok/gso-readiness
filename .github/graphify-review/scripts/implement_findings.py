@@ -16,7 +16,7 @@ from git_providers import describe, provider_for
 from hub_findings import context, request_json
 from publish_review import PublishError, configured_hub
 from revalidate_finding import source
-from review_settings import process_environment
+from review_settings import load_settings, process_environment
 from targeted_contract import bounded, digest, validate_targeted
 
 
@@ -54,7 +54,21 @@ def hosting(state):
     return state["hosting"]
 
 
+def credential_context(root):
+    settings = load_settings(root)
+    project = settings["project"]
+    return {**{key: project.get(key, "") for key in ("repository_id", "hub_credential_ref", "azure_credential_ref")},
+            "azure_auth": project.get("azure_auth") or settings["user"].get("azure_auth") or "auto",
+            **({"hub_workspace_id": project["hub_workspace_id"]} if project.get("hub_workspace_id") else {})}
+
+
+def check_credential_context(state):
+    if "credential_context" in state and credential_context(Path(state["root"])) != state["credential_context"]:
+        raise WorkError("Project identity or credential selection changed during this attempt. Restore the original selection; do not complete a claim with another project's credentials.")
+
+
 def bound_provider(state):
+    check_credential_context(state)
     root, host = Path(state["root"]), hosting(state)
     current = describe(root, state["remote"], run)
     if any(current.get(key) != value for key, value in host.items() if key != "repository_uuid"):
@@ -117,6 +131,7 @@ def plan(args):
     baseline = request_json(root, "GET", "/api/v1/review-imports/" + str(uuid.UUID(item["baseline_import_id"])), expected_hub=hub)
     write_new_json(directory / "baseline-review.json", baseline["payload"]["review"])
     state = {"schema_version": "1.0", "root": str(root), "hub_url": hub, "item": item,
+             "credential_context": credential_context(root),
              "base_branch": base, "base_commit": commit, "branch": "feature/" + short_id,
              "remote": remote, "hosting": host, "request_id": str(uuid.uuid4()),
              "worktree": str(directory / "worktree"), "stage": "planned"}
@@ -127,6 +142,7 @@ def plan(args):
 
 
 def api(state, data):
+    check_credential_context(state)
     return request_json(Path(state["root"]), "POST", f"/api/v1/findings/{uuid.UUID(state['item']['finding_id'])}/implementation", data, state["hub_url"])
 
 

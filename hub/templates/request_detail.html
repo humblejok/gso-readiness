@@ -1,0 +1,24 @@
+{% extends 'base.html' %}
+{% block title %}{{ item.get_kind_display }} · Finding Hub{% endblock %}
+{% block content %}
+<p><a href="/w/{{ request.workspace.id }}/requests/">← Bug & feature requests</a></p>
+<h1>{{ item.get_kind_display }}</h1>
+<p><span class="badge">{{ item.get_status_display }}</span> · Created by {{ item.created_by }} · {{ item.created_at }}</p>
+<p class="muted">Request ID: <code>{{ item.pk }}</code> · Revision {{ item.revision }}</p>
+{% if item.status == 'closed' %}{{ edit_form.non_field_errors }}{{ transition_form.non_field_errors }}{% endif %}
+<section class="panel"><h2>Workflow</h2>
+<ol class="request-workflow" aria-label="Request workflow">{% for value,label in statuses %}<li{% if item.status == value %} aria-current="step"{% endif %}>{{ label }}</li>{% endfor %}</ol>
+<p class="muted">Each stage is recorded manually. Changing status does not run a coding agent or create a pull request.</p>
+{% if writable and request.membership.role != 'viewer' and item.next_status %}
+<form method="post">{% csrf_token %}{{ transition_form.as_p }}<button name="action" value="transition">Mark {{ item.next_status }}</button></form>
+{% elif item.status == 'closed' %}<p>This request is closed and read-only.</p>{% endif %}
+</section>
+<section class="panel"><h2>Description</h2><p class="preserve-lines request-description">{{ item.description }}</p>
+{% if writable and request.membership.role != 'viewer' and item.status != 'closed' %}
+<details{% if edit_form.is_bound %} open{% endif %}><summary>Edit request</summary><form method="post">{% csrf_token %}{{ edit_form.as_p }}<button name="action" value="edit">Save changes</button></form></details>
+{% endif %}</section>
+<section class="panel"><h2>History</h2>
+{% for activity in activities %}<article><h3>{{ activity.get_action_display }} · Revision {{ activity.revision }}</h3><p class="muted">{{ activity.actor }} · {{ activity.created_at }}</p><p>{% if activity.previous_status and activity.previous_status != activity.status %}{{ activity.previous_status|title }} → {% endif %}{{ activity.get_status_display }} · {{ activity.get_kind_display }}</p><details><summary>Description at this revision</summary><p class="preserve-lines request-description">{{ activity.description }}</p></details></article>{% endfor %}
+{% include 'pagination.html' with rows=activities %}
+</section>
+{% endblock %}

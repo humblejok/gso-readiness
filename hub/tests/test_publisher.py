@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
+
 from hubapp.models import Finding, Repository, ReviewImport
 from hubapp.services import create_workspace, issue_token
 from hubapp.tenancy import tenant_scope
@@ -50,7 +51,7 @@ def test_publish_creates_project_replays_and_updates_existing_project(
     with tenant_scope(org.id):
         token = issue_token("Publisher", ["reviews:write"], "repo:orders")
         assert Repository.objects.count() == 0
-    monkeypatch.setattr(publisher, "token_for", lambda _: token)
+    monkeypatch.setattr(publisher, "token_for", lambda _, repository: token)
     path = tmp_path / "import-envelope.json"
     path.write_text(json.dumps(envelope), encoding="utf-8")
     first = publisher.publish(tmp_path, path, 30)
@@ -86,7 +87,7 @@ def test_publisher_cannot_bypass_scope_or_project_restriction(
 ):
     with tenant_scope(org.id):
         token = issue_token("Restricted", scopes, restriction)
-    monkeypatch.setattr(publisher, "token_for", lambda _: token)
+    monkeypatch.setattr(publisher, "token_for", lambda _, repository: token)
     path = tmp_path / "import-envelope.json"
     path.write_text(json.dumps(envelope), encoding="utf-8")
     with pytest.raises(publisher.PublishError, match="Hub refused publication"):
@@ -106,7 +107,7 @@ def test_publisher_project_identity_is_scoped_to_token_workspace(
     for workspace in (org, other):
         with tenant_scope(workspace.id):
             token = issue_token("Publisher", ["reviews:write"])
-        monkeypatch.setattr(publisher, "token_for", lambda _, value=token: value)
+        monkeypatch.setattr(publisher, "token_for", lambda _, repository, value=token: value)
         result = publisher.publish(tmp_path, path, 30)
         assert result["organization_id"] == str(workspace.id)
         assert result["repository_created"] is True
@@ -127,7 +128,7 @@ def test_run_local_revalidation_export_updates_hub_resolution_without_rewriting_
     monkeypatch.setattr(review_settings, "load_settings", lambda _: settings)
     with tenant_scope(org.id):
         token = issue_token("Publisher", ["reviews:write"])
-    monkeypatch.setattr(publisher, "token_for", lambda _: token)
+    monkeypatch.setattr(publisher, "token_for", lambda _, repository: token)
 
     def ensure(review_path):
         return export_review.ensure(Namespace(

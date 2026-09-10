@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 from review_settings import (
     PROJECT_KEYS, USER_KEYS, SettingsError, load_preset, load_settings,
     process_environment, project_settings_path, read_settings, user_settings_path,
-    validate_section, write_settings,
+    trusted_azure_collections, validate_section, write_settings,
 )
 
 
@@ -87,14 +87,15 @@ def configure(args) -> dict:
         scope, dot, key = scope_key.partition(".")
         if not separator or not dot or scope not in {"project", "user"}:
             raise SettingsError("Use --default project.key=value or --default user.key=value.")
-        (project if scope == "project" else user).setdefault(key, value)
+        parsed_value = [item.strip() for item in value.split(",") if item.strip()] if key in {"artifactory_repositories", "azure_devops_collections"} else value
+        (project if scope == "project" else user).setdefault(key, parsed_value)
     for assignment in args.set:
         scope_key, separator, value = assignment.partition("=")
         scope, dot, key = scope_key.partition(".")
         if not separator or not dot or scope not in {"project", "user"}:
             raise SettingsError("Use --set project.key=value or --set user.key=value.")
         target = project if scope == "project" else user
-        target[key] = [item.strip() for item in value.split(",") if item.strip()] if key == "artifactory_repositories" else value
+        target[key] = [item.strip() for item in value.split(",") if item.strip()] if key in {"artifactory_repositories", "azure_devops_collections"} else value
     for scope_key in args.unset:
         scope, dot, key = scope_key.partition(".")
         if not dot or scope not in {"project", "user"} or key not in (PROJECT_KEYS if scope == "project" else USER_KEYS):
@@ -102,6 +103,17 @@ def configure(args) -> dict:
         (project if scope == "project" else user).pop(key, None)
     validate_section("project", project)
     validate_section("user", user)
+    if args.trust_azure_collection or args.untrust_azure_collection:
+        from git_host_contract import collection_url
+        approved = trusted_azure_collections(user)
+        for value in args.trust_azure_collection:
+            canonical = collection_url(value)
+            if canonical not in approved:
+                approved.append(canonical)
+        removed = {collection_url(value) for value in args.untrust_azure_collection}
+        user["azure_devops_collections"] = [value for value in approved if value not in removed]
+        user.pop("azure_devops_url", None)  # Migrate legacy trust without losing it.
+        validate_section("user", user)
     if not args.non_interactive:
         if not sys.stdin.isatty():
             raise SettingsError("Open a terminal for the wizard, or use /setup-review in Copilot. Automated calls require --non-interactive.")
@@ -127,6 +139,8 @@ def configure(args) -> dict:
         project["artifactory_repositories"] = [value.strip() for value in ask("Artifactory repository keys, comma-separated (optional)", ",".join(project.get("artifactory_repositories", []))).split(",") if value.strip()]
         user["hub_url"] = ask("Finding Hub URL (optional; no automatic uploads)", user.get("hub_url", ""))
         if user["hub_url"]:
+            project["hub_workspace_id"] = ask("Hub workspace UUID (required for tech-lead personal tokens; optional for workspace tokens)", project.get("hub_workspace_id", ""))
+            project["hub_credential_ref"] = ask("Hub credential reference for this project (non-secret label)", project.get("hub_credential_ref", "default"))
             project["git_provider"] = ask("Implementation Git host: auto, github, azure-devops", project.get("git_provider", "auto"), True)
             _, remote_url = probe(["git", "remote", "get-url", "origin"], repository, environment)
             try:
@@ -136,8 +150,18 @@ def configure(args) -> dict:
                 host = {}
             if project["git_provider"] == "azure-devops" or host.get("provider") == "azure-devops":
                 print("Git keeps its existing authentication. API calls require a separately trusted collection URL; no authentication is attempted during setup.")
-                user["azure_devops_url"] = ask("Confirm trusted Azure collection URL (not repository URL)", user.get("azure_devops_url", host.get("collection_url", "")), True)
+                from git_host_contract import collection_url
+                approved = trusted_azure_collections(user)
+                candidate = host.get("collection_url", "")
+                if candidate not in approved:
+                    chosen = collection_url(ask("Confirm trusted Azure collection URL (added to approved collections, not repository URL)", candidate, True))
+                    if chosen not in approved:
+                        approved.append(chosen)
+                user["azure_devops_collections"] = approved
+                user.pop("azure_devops_url", None)
                 user["azure_auth"] = ask("Azure API authentication: auto, windows, pat", user.get("azure_auth", "auto"), True)
+                project["azure_auth"] = ask("Azure authentication override for this project (optional: windows/pat/auto)", project.get("azure_auth", ""))
+                project["azure_credential_ref"] = ask("Azure PAT credential reference for this project (non-secret label)", project.get("azure_credential_ref", "default"))
                 project["azure_api_version"] = ask("Azure API version: 6.0 (Server 2020), 7.0, 7.1", project.get("azure_api_version", "6.0"), True)
         corporate = any(user.get(key) for key in ("proxy_url", "ca_bundle", "pip_index_url", "java_truststore"))
         if ask("Configure corporate proxy/certificates? yes/no", "yes" if corporate else "no").lower() in {"yes", "y"}:
@@ -221,7 +245,8 @@ def doctor(args) -> dict:
     check("copilot", "info", "In VS Code, verify Copilot is installed and signed in, and this project is trusted. This diagnostic cannot verify your Copilot entitlement/session.")
     if settings["user"].get("hub_url"):
         check("hub_publishing", "info", "Hub destination configured. Use /publish-review for explicit uploads and automatic project creation in an existing workspace. First run publish_review.py login in your own terminal after bootstrap. This diagnostic does not read your credential store or verify token permissions.")
-        check("implementation_hosting", "info", "Git uses existing credentials. Azure DevOps needs no gh/Azure CLI: confirm azure_devops_url and azure_auth with /configure-review, then explicitly run azure_devops.py check for read-only API authentication. GitHub requires authenticated gh. Normal doctor checks do not load API credentials.")
+        check("implementation_hosting", "info", "Git uses existing credentials. Azure DevOps needs no gh/Azure CLI: approve collections additively with /configure-review azure-trust-collection=<url>, then explicitly run azure_devops.py check. Each repository selects its collection from its Git remote. Normal doctor checks do not load API credentials.")
+        check("credential_selection", "info", "Login stores tokens by stable project ID, destination and credential reference. Set explicit project hub_credential_ref/azure_credential_ref to prohibit legacy shared-token fallback. Finish active implementation claims before changing their token/reference. No secrets were read.")
     servers = jfrog_servers(repository, environment)
     server = settings["user"].get("jfrog_server_id") or environment.get("JFROG_CLI_SERVER_ID")
     if server:
@@ -272,6 +297,8 @@ def main(argv=None) -> int:
     parser.add_argument("--default", action="append", default=[], help="Fill a missing value without replacing a saved choice")
     parser.add_argument("--installed-root", help="Installer's dedicated tool/truststore folder; discover defaults only")
     parser.add_argument("--unset", action="append", default=[])
+    parser.add_argument("--trust-azure-collection", action="append", default=[], help="Approve an exact collection URL, preserving previously approved collections")
+    parser.add_argument("--untrust-azure-collection", action="append", default=[], help="Remove one collection approval without changing others or deleting credentials")
     parser.add_argument("--network", action="store_true", help="Opt in to Artifactory ping and unauthenticated Hub health GET")
     args = parser.parse_args(argv)
     try:

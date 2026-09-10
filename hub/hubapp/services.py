@@ -15,6 +15,8 @@ from django.utils import timezone
 from .models import (
     ApiClient,
     AuditEvent,
+    ChangeRequest,
+    ChangeRequestActivity,
     FindingActivity,
     Membership,
     Organization,
@@ -73,7 +75,9 @@ def usage():
             created_at__year=now.year, created_at__month=now.month
         ).count(),
         "storage_bytes": (ReviewImport.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0)
-        + (FindingActivity.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0),
+        + (FindingActivity.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0)
+        + (ChangeRequest.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0)
+        + (ChangeRequestActivity.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0),
     }
 
 

@@ -30,6 +30,24 @@ Open `http://127.0.0.1:8000/accounts/signup/`. Register an email and a strong pa
 
 The dedicated `.finding-hub-venv` does not touch `.venv` or `.graphify-review-venv`. Settings read environment variables; `.env` is **not loaded automatically** by Django. Use shell exports, your process manager, or Docker Compose's `env_file`. Do not commit secrets or the development database.
 
+## Tech-lead personal tokens
+
+The Hub supports **user-level tokens** for operator-designated tech leads, separate from workspace API tokens. These tokens can create/name-update workspaces and import, read or manage findings across the Hub according to selected scopes. This is an **instance-wide** privilege, not a customer/workspace-admin role; billing, memberships, deletion and evidence checks remain protected. Apply migration **0008**, then have a superuser operator enable **Is tech lead** on the user. The user can issue/revoke tokens through **Personal tokens** in the account navigation.
+
+Personal tokens require an explicit workspace UUID for review/finding operations. Configure the kit with `/configure-review hub-workspace-id=<UUID>` and use the existing terminal login to store the token. Existing workspace tokens continue working without that setting. See [permissions, setup, revocation and API examples](../docs/tech_lead_tokens.md).
+
+## Workspace bug and feature requests
+
+Open a workspace and select **Bug & feature requests → New request**. Choose **Bug fix** or **Feature request**, enter a description (up to 20,000 characters), and save. No imported review or repository is required.
+
+Requests start **Open** and advance one stage at a time: **Open → Analyzed → Specified → Implemented → Closed**. The detail page offers a **Mark …** button for the next stage and an **Edit request** section for changing the type or description. Closed requests are read-only; backward transitions and reopening are not currently supported. These are manual tracking statuses: they do not execute a coding agent, create a branch/PR, or synchronize with Jira.
+
+Owners, admins and reviewers can create and update requests; viewers can browse them. Search and type/status filters are available on the list. Each creation, edit and transition records its author, time, revision and description snapshot. Stale browser submissions are rejected so they cannot overwrite newer edits. Read-only subscriptions preserve browsing and export access.
+
+For existing installations, back up the database and run `.finding-hub-venv/bin/python hub/manage.py migrate` (Windows: `.\.finding-hub-venv\Scripts\python.exe hub\manage.py migrate`). Migration **0007** creates the request/history tables and PostgreSQL tenant isolation/reference guards. Restart the application; production deployments must also rebuild static assets or run `collectstatic --noinput` using their existing configuration. Do not migrate a production database with the development settings.
+
+Request data and revision history count toward workspace storage. Workspace exports include additive `change_requests` and `change_request_activities` arrays (archival data, not a supported restore/import format). Workspace erasure includes both tables. No new API token permissions are needed: this feature uses the authenticated Hub web interface only. Run the PostgreSQL isolation/concurrency tests with a non-superuser, non-BYPASSRLS runtime role before production deployment.
+
 ## Upgrade for finding implementation
 
 After deploying the updated code, back up your database, then run migrations using your Hub environment (not the review kit environment):
@@ -52,6 +70,8 @@ See [commands, safety constraints, retries and API](../docs/finding_implementati
 
 ## Upload a review
 
+The kit's login now supports project-scoped tokens: select `/configure-review hub-credential-ref=default`, then run `publish_review.py login --repository .` in that project's terminal. The secret is stored by Hub URL, stable project ID and reference, so another project using the same Hub cannot overwrite it through its own login. The Hub's API permissions and token lifecycle are unchanged; this credential-selection enhancement requires no server migration. See [multi-project connection configuration](../docs/project_connections.md).
+
 In the reviewed project's Copilot chat, first export a previous full-project run:
 
 ```text
@@ -70,7 +90,7 @@ The input is the JSON import envelope defined in the specification, not `REVIEW.
 - `review`: complete authoritative schema-2.1 review;
 - `remediations`: source-bound plans for every supported finding.
 
-Use **Import review** in the dashboard, or configure the reviewed project's Hub URL and use `/publish-review review=<previous-run>` or `/publish-review envelope=<import-envelope.json>`. The kit's terminal login stores a `reviews:write` workspace token in the native OS credential store. See [one-time connection and publishing](../README.md#publish-results-to-the-configured-hub). No manual project creation is required: the import transaction creates a missing repository by its stable external ID **inside the token's existing workspace**, subject to subscription/quotas and token restrictions. Subsequent runs reuse that project; identical retries cannot create duplicates.
+Use **Import review** in the dashboard, or configure the reviewed project's Hub URL and use `/publish-review review=<previous-run>` or `/publish-review envelope=<import-envelope.json>`. The kit's terminal login stores a `reviews:write` token in the native OS credential store. See [one-time connection and publishing](../README.md#publish-results-to-the-configured-hub). No manual project creation is required: the import transaction creates a missing repository by its stable external ID **inside the workspace token's own workspace, or the explicitly selected workspace for a personal tech-lead token**, subject to subscription/quotas and token restrictions. Subsequent runs reuse that project; identical retries cannot create duplicates.
 
 For custom integrations, create a shown-once workspace API token with `reviews:write`, then submit:
 

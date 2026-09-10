@@ -4,9 +4,16 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from django.db import DatabaseError, close_old_connections, connection, transaction
 
-from hubapp import finding_work
+from hubapp import change_requests, finding_work
 from hubapp.imports import import_review
-from hubapp.models import Finding, FindingActivity, Repository, ReviewImport
+from hubapp.models import (
+    ChangeRequest,
+    ChangeRequestActivity,
+    Finding,
+    FindingActivity,
+    Repository,
+    ReviewImport,
+)
 from hubapp.services import create_workspace
 from hubapp.tenancy import tenant_scope
 
@@ -130,3 +137,66 @@ def test_postgres_concurrent_claim_has_one_winner(org, envelope, key):
         assert sorted(executor.map(lambda _: run(), range(2))) == ["claimed", "conflict"]
     with tenant_scope(org.id):
         assert FindingActivity.objects.filter(status="running").count() == 1
+
+
+def test_postgres_change_requests_rls_and_references(org, owner):
+    other = create_workspace(owner, "Request isolation")
+    with tenant_scope(org.id):
+        item = change_requests.create(
+            kind="bug", description="Private request", actor=owner.username
+        )
+    with tenant_scope(other.id):
+        for table in ("hubapp_changerequest", "hubapp_changerequestactivity"):
+            with connection.cursor() as cursor:
+                cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                assert cursor.fetchone()[0] == 0
+        with pytest.raises(DatabaseError), transaction.atomic():
+            ChangeRequest.all_objects.create(organization=org, kind="bug", description="Forbidden")
+        with pytest.raises(DatabaseError), transaction.atomic():
+            ChangeRequestActivity.all_objects.create(
+                organization=other,
+                change_request=item,
+                actor="Intruder",
+                action="created",
+                revision=2,
+                kind="bug",
+                description="Foreign reference",
+                status="open",
+            )
+    with tenant_scope(org.id), pytest.raises(DatabaseError), transaction.atomic():
+        ChangeRequest.all_objects.filter(pk=item.pk).update(organization=other)
+    for table in ("hubapp_changerequest", "hubapp_changerequestactivity"):
+        with connection.cursor() as cursor:
+            cursor.execute(f"SELECT COUNT(*) FROM {table}")
+            assert cursor.fetchone()[0] == 0
+
+
+def test_postgres_concurrent_request_update_has_one_winner(org, owner):
+    with tenant_scope(org.id):
+        item = change_requests.create(
+            kind="feature", description="New feature", actor=owner.username
+        )
+
+    def run():
+        close_old_connections()
+        try:
+            with tenant_scope(org.id):
+                try:
+                    change_requests.update(
+                        item.pk,
+                        revision=1,
+                        actor=owner.username,
+                        action="transition",
+                        status="analyzed",
+                    )
+                    return "updated"
+                except change_requests.RequestConflict:
+                    return "conflict"
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert sorted(executor.map(lambda _: run(), range(2))) == ["conflict", "updated"]
+    with tenant_scope(org.id):
+        assert ChangeRequestActivity.objects.count() == 2
+        assert ChangeRequest.objects.get(pk=item.pk).revision == 2

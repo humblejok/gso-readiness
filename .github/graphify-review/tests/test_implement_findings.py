@@ -276,6 +276,13 @@ class ImplementationTests(unittest.TestCase):
         self.assertFalse((path.parent / "completion.json").exists())
         self.assertFalse(self.completions)
 
+    def test_changed_project_credential_selection_blocks_resuming_attempt(self):
+        path, state = self.plan()
+        changed = {**state["credential_context"], "hub_credential_ref": "another-workspace"}
+        with mock.patch.object(work, "credential_context", return_value=changed):
+            with self.assertRaisesRegex(work.WorkError, "credential selection changed"):
+                work.bound_provider(state)
+
 
 if __name__ == "__main__":
     unittest.main()

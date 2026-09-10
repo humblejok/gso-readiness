@@ -15,8 +15,9 @@ import warnings
 from pathlib import Path
 
 from git_host_contract import HostError, collection_url
+from credential_refs import LOGGED_OUT, CredentialRefError, check_environment_binding, slot, stored_token
 from publish_review import native_keyring, opener_for
-from review_settings import load_settings, process_environment, validate_url
+from review_settings import load_settings, process_environment, trusted_azure_collections, validate_url
 
 MAX_BYTES = 10 * 1024 * 1024
 
@@ -25,12 +26,17 @@ class AzureError(ValueError):
     pass
 
 
+def approved_collection(settings, host):
+    selected = collection_url(host["collection_url"])
+    if selected not in trusted_azure_collections(settings["user"]):
+        raise AzureError("This Git remote's collection is not approved. Use /configure-review azure-trust-collection=<collection-url> to add it without replacing other collections. No credentials were sent.")
+    return selected
+
+
 def destination(root, host):
     settings = load_settings(root)
-    trusted = settings["user"].get("azure_devops_url")
-    if not trusted or collection_url(trusted) != host["collection_url"]:
-        raise AzureError("Confirm this remote's collection URL with /configure-review azure-devops-url=<collection-url> before API authentication. No credentials were sent.")
-    auth = settings["user"].get("azure_auth") or "auto"
+    trusted = approved_collection(settings, host)
+    auth = settings.get("project", {}).get("azure_auth") or settings["user"].get("azure_auth") or "auto"
     if auth == "auto":
         auth = "windows" if sys.platform == "win32" and urllib.parse.urlsplit(trusted).hostname not in {"dev.azure.com"} and not urllib.parse.urlsplit(trusted).hostname.endswith(".visualstudio.com") else "pat"
     if auth == "windows" and sys.platform != "win32":
@@ -44,17 +50,26 @@ def valid_pat(value):
     return value
 
 
-def pat_for(collection):
+def pat_for(collection, repository=None):
+    project = load_settings(repository).get("project", {}) if repository is not None else {}
+    try:
+        selected = slot("azure", collection, project)
+    except CredentialRefError as exc:
+        raise AzureError(str(exc)) from exc
     if os.environ.get("GRAPHIFY_AZURE_PAT"):
         if collection_url(os.environ.get("GRAPHIFY_AZURE_PAT_URL", "")) != collection:
             raise AzureError("GRAPHIFY_AZURE_PAT_URL must exactly match the approved collection URL.")
+        try:
+            check_environment_binding("GRAPHIFY_AZURE_PAT", selected)
+        except CredentialRefError as exc:
+            raise AzureError(str(exc)) from exc
         return valid_pat(os.environ["GRAPHIFY_AZURE_PAT"])
     try:
-        value = native_keyring().get_password("graphify-review-azure:" + collection, "pat")
+        value = stored_token(native_keyring(), selected)
     except Exception as exc:
         raise AzureError("Cannot read the Azure credential from native OS storage. Unlock it or use a destination-bound secret-manager environment token. No plaintext fallback is used.") from exc
     if not value:
-        raise AzureError("No Azure PAT saved for this collection. Run azure_devops.py login in your own terminal, or select Windows authentication if supported.")
+        raise AzureError("No Azure PAT saved for this project's selected credential and collection. Run azure_devops.py login --repository . in your own terminal, or select Windows authentication if supported.")
     return valid_pat(value)
 
 
@@ -102,7 +117,7 @@ def request(root, host, method, suffix="", query=None, data=None):
             status, raw = windows_request(root, collection, method, url, data)
         else:
             # Reuse verified PEM/proxy/NO_PROXY transport, never the Hub bearer token.
-            token = base64.b64encode((":" + pat_for(collection)).encode()).decode()
+            token = base64.b64encode((":" + pat_for(collection, root)).encode()).decode()
             req = urllib.request.Request(url, method=method,
                     data=json.dumps(data, ensure_ascii=True, allow_nan=False).encode() if data is not None else None,
                     headers={"Authorization": "Basic " + token, "Accept": "application/json", "Content-Type": "application/json"})
@@ -127,20 +142,35 @@ def request(root, host, method, suffix="", query=None, data=None):
         raise AzureError("Azure API connection/TLS/response failed. Check proxy and certificates. A write may have completed; retry only the same saved attempt. Raw server/credential errors are suppressed.") from exc
 
 
-def credential_action(root, action):
-    value = load_settings(root)["user"].get("azure_devops_url")
-    if not value:
-        raise AzureError("Configure the trusted Azure collection URL first.")
-    collection = collection_url(value)
+def detected_host(root, remote):
+    from git_providers import describe
+    def run(repository, *command):
+        completed = subprocess.run(command, cwd=repository, env=process_environment(repository), capture_output=True, timeout=30)
+        if completed.returncode:
+            raise AzureError("Git/hosting command failed. Check the selected remote or GitHub authentication; raw output is suppressed.")
+        return completed.stdout.decode("utf-8").strip()
+    return describe(root, remote, run), run
+
+
+def credential_action(root, action, remote="origin"):
     if not sys.stdin.isatty():
         raise AzureError("PAT login/logout must run in your own interactive terminal, never an agent tool.")
+    settings = load_settings(root)
+    host, _ = detected_host(root, remote)
+    if host["provider"] != "azure-devops":
+        raise AzureError("Selected Git remote is not Azure DevOps.")
+    collection = approved_collection(settings, host)
+    try:
+        selected = slot("azure", collection, settings.get("project", {}), require_project=True)
+    except CredentialRefError as exc:
+        raise AzureError(str(exc)) from exc
     try:
         backend = native_keyring()
-        service = "graphify-review-azure:" + collection
+        service = selected["service"]
         if action == "logout":
-            backend.delete_password(service, "pat")
+            backend.set_password(service, "pat", LOGGED_OUT)
         else:
-            print("Azure collection: " + collection + "\nUse a least-privilege PAT with Code read/write and repository PR permissions. Never paste it into chat. Windows authentication does not need a PAT.")
+            print("Azure collection: " + collection + "\nProject: " + selected["repository_id"] + " · credential reference: " + selected["reference"] + "\nUse a least-privilege PAT with Code read/write and repository PR permissions. This replaces only the selected project's credential, not other projects. Never paste it into chat. Windows authentication does not need a PAT.")
             with warnings.catch_warnings():
                 warnings.simplefilter("error", getpass.GetPassWarning)
                 token = valid_pat(getpass.getpass("Azure PAT (hidden): "))
@@ -150,7 +180,8 @@ def credential_action(root, action):
     except Exception as exc:
         raise AzureError("Azure credential operation failed; no plaintext fallback was used.") from exc
     return {"status": "credential_saved" if action == "login" else "credential_removed", "collection_url": collection,
-            "message": "No network request made. Select azure-auth=pat to use this credential; logout does not revoke the server token."}
+            "repository_id": selected["repository_id"], "credential_ref": selected["reference"],
+            "message": "No network request made. Select project-azure-auth=pat to use this credential only in this project. Logout replaces only this project's secret with a non-secret marker preventing legacy fallback; it does not revoke server tokens or affect environment tokens."}
 
 
 def main(argv=None):
@@ -162,15 +193,10 @@ def main(argv=None):
     try:
         root = Path(args.repository).resolve()
         if args.action in {"login", "logout"}:
-            result = credential_action(root, args.action)
+            result = credential_action(root, args.action, args.remote)
         else:
-            from git_providers import describe, provider_for
-            def run(repository, *command):
-                completed = subprocess.run(command, cwd=repository, env=process_environment(repository), capture_output=True, timeout=30)
-                if completed.returncode:
-                    raise AzureError("Git/hosting command failed. Check the selected remote or GitHub authentication; raw output is suppressed.")
-                return completed.stdout.decode("utf-8").strip()
-            host = describe(root, args.remote, run)
+            from git_providers import provider_for
+            host, run = detected_host(root, args.remote)
             if args.action == "check":
                 provider_for(root, host, run).preflight()
             result = {"status": "ready" if args.action == "check" else "detected", "hosting": host,

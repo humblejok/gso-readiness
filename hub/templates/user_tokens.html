@@ -1,0 +1,11 @@
+{% extends 'base.html' %}
+{% block title %}Personal API tokens · Finding Hub{% endblock %}
+{% block content %}
+<h1>Personal API tokens</h1>
+<div class="notice">Tech-lead tokens have instance-wide access within their selected scopes, including workspaces you do not belong to. They cannot manage other users, billing, permissions or deletion. Use a workspace token when cross-workspace access is unnecessary.</div>
+{% if secret %}<div class="notice"><strong>Copy this token now. It will not be shown again.</strong><pre>{{ secret }}</pre></div>{% endif %}
+{% if user.is_tech_lead %}<section class="panel form-panel"><h2>Create a user token</h2><form method="post">{% csrf_token %}{{ form.as_p }}<button>Create token</button></form></section>{% else %}<p>An operator must grant your account the tech-lead attribute before you can create tokens. You can still revoke existing tokens below.</p>{% endif %}
+<p>For existing review and finding API endpoints, send <code>X-Workspace-ID: &lt;workspace UUID&gt;</code>. Workspaces can be listed through <code>GET /api/v1/workspaces</code> with the <code>workspaces:read</code> scope.</p>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Scopes</th><th>Expiry</th><th>Action</th></tr></thead><tbody>{% for token in tokens %}<tr><td>{{ token.name }}</td><td>{{ token.scopes|join:', ' }}</td><td>{{ token.expires_at }}</td><td>{% if token.revoked_at %}Revoked{% else %}<form method="post">{% csrf_token %}<button class="quiet" name="revoke" value="{{ token.pk }}">Revoke</button></form>{% endif %}</td></tr>{% empty %}<tr><td colspan="4">No personal tokens yet.</td></tr>{% endfor %}</tbody></table></div>
+{% include 'pagination.html' with rows=tokens %}
+{% endblock %}

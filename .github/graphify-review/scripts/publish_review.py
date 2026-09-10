@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from export_review import KIT_ROOT, MAX_BYTES, ExportError, read_json, write_new_json
+from credential_refs import LOGGED_OUT, CredentialRefError, check_environment_binding, slot, stored_token
 from review_settings import (
     SettingsError,
     load_settings,
@@ -69,9 +70,15 @@ def native_keyring():
         raise PublishError("System credential storage is unavailable or locked. Unlock your OS keyring, or use destination-bound FINDING_HUB_TOKEN and FINDING_HUB_TOKEN_URL supplied by your secret manager. Plaintext storage is never used.") from exc
 
 
+def workspace_headers(repository):
+    """Explicit non-secret tenant selection, required for personal tech-lead tokens."""
+    workspace = load_settings(repository).get("project", {}).get("hub_workspace_id", "")
+    return {"X-Workspace-ID": workspace} if workspace else {}
+
+
 def validate_token(value: str) -> str:
     if not isinstance(value, str) or not TOKEN_PATTERN.fullmatch(value):
-        raise PublishError("Expected a Hub workspace API token (UUID.secret) with the permissions required by your command.")
+        raise PublishError("Expected a Hub API token (UUID.secret) with the permissions required by your command.")
     try:
         uuid.UUID(value.split(".", 1)[0])
     except ValueError as exc:
@@ -79,20 +86,29 @@ def validate_token(value: str) -> str:
     return value
 
 
-def token_for(hub: str) -> str:
+def token_for(hub: str, repository: Path | None = None) -> str:
+    project = load_settings(repository).get("project", {}) if repository is not None else {}
+    try:
+        selected = slot("hub", hub, project)
+    except CredentialRefError as exc:
+        raise PublishError(str(exc)) from exc
     if os.environ.get("FINDING_HUB_TOKEN"):
         destination = os.environ.get("FINDING_HUB_TOKEN_URL")
         if not destination or canonical_hub(destination) != hub:
             raise PublishError("FINDING_HUB_TOKEN_URL must match the configured Hub before an environment token can be sent. This prevents reuse after changing destinations.")
+        try:
+            check_environment_binding("FINDING_HUB_TOKEN", selected)
+        except CredentialRefError as exc:
+            raise PublishError(str(exc)) from exc
         return validate_token(os.environ["FINDING_HUB_TOKEN"])
     try:
-        value = native_keyring().get_password("graphify-review-hub:" + hub, "workspace-token")
+        value = stored_token(native_keyring(), selected)
     except PublishError:
         raise
     except Exception as exc:
         raise PublishError("Could not read the Hub credential. Unlock the system credential store or run the terminal login helper.") from exc
     if not value:
-        raise PublishError("No token is saved for this Hub. Run publish_review.py login in your own terminal; never paste tokens into Copilot.")
+        raise PublishError("No token is saved for this project's selected Hub credential. Run publish_review.py login --repository . in your own terminal; never paste tokens into Copilot.")
     return validate_token(value)
 
 
@@ -100,23 +116,27 @@ def credential_action(action: str, repository: Path) -> dict:
     hub = configured_hub(repository)
     if not sys.stdin.isatty():
         raise PublishError("Login/logout must run in your own interactive terminal, not an agent tool or shared log.")
+    try:
+        selected = slot("hub", hub, load_settings(repository).get("project", {}), require_project=True)
+    except CredentialRefError as exc:
+        raise PublishError(str(exc)) from exc
     backend = native_keyring()
-    service = "graphify-review-hub:" + hub
+    service = selected["service"]
     try:
         if action == "logout":
-            backend.delete_password(service, "workspace-token")
-            return {"status": "logged_out", "hub_url": hub, "message": "Local credential removed. Revoke the token in Hub to invalidate it elsewhere. Environment tokens are unaffected."}
-        print(f"Hub: {hub}\nCreate a workspace API token with the command's scopes: reviews:write for uploads; findings:read plus findings:implement for queued implementations.\nPaste it below; it is stored in your OS credential store, never in this repository. This replaces any locally saved token for this Hub.")
+            backend.set_password(service, "workspace-token", LOGGED_OUT)
+            return {"status": "logged_out", "hub_url": hub, "repository_id": selected["repository_id"], "credential_ref": selected["reference"], "message": "Selected project token replaced by a non-secret logout marker to prevent legacy fallback. Other projects and environment tokens are unaffected. Revoke the token in Hub to invalidate it elsewhere."}
+        print(f"Hub: {hub}\nProject: {selected['repository_id']} · credential reference: {selected['reference']}\nUse a workspace API token or a personal tech-lead token with the command's scopes: reviews:write for uploads; findings:read plus findings:implement for queued implementations. Personal tokens require project.hub_workspace_id.\nPaste it below; it replaces only this project's selected credential in OS storage. Other projects and legacy destination-wide tokens are unchanged.")
         with warnings.catch_warnings():
             warnings.simplefilter("error", getpass.GetPassWarning)
-            token = validate_token(getpass.getpass("Hub workspace token (hidden): "))
+            token = validate_token(getpass.getpass("Hub API token (hidden): "))
         backend.set_password(service, "workspace-token", token)
     except PublishError:
         raise
     except Exception as exc:
         raise PublishError("Credential operation failed. Check your OS credential store; no plaintext fallback was used.") from exc
-    return {"status": "credential_saved", "hub_url": hub,
-            "message": "Saved locally for this Hub only. Authentication/scope will be checked when publishing; no network request was made."}
+    return {"status": "credential_saved", "hub_url": hub, "repository_id": selected["repository_id"], "credential_ref": selected["reference"],
+            "message": "Saved for this project, Hub and credential reference only. Authentication/scope will be checked when publishing; no network request was made."}
 
 
 class NoRedirects(urllib.request.HTTPRedirectHandler):
@@ -180,18 +200,22 @@ def publish(repository: Path, path: Path, timeout: int, dry_run: bool = False) -
     if not key.isascii() or any(ord(char) < 32 or ord(char) == 127 for char in key):
         raise PublishError("Repository/run IDs must be ASCII without control characters for the Idempotency-Key header.")
     validate_envelope(data, key, KIT_ROOT / "schema")
+    configured_id = load_settings(repository).get("project", {}).get("repository_id")
+    if configured_id and data["repository"]["external_id"] != configured_id:
+        raise PublishError("Envelope belongs to a different project than this checkout. Use the matching project's settings and credential; nothing was sent.")
     payload = canonical(data).encode("utf-8")
     if len(payload) > MAX_BYTES:
         raise PublishError("Envelope exceeds the Hub upload limit.")
-    metadata = {"hub_url": hub, "repository_external_id": data["repository"]["external_id"],
+    selection_headers = workspace_headers(repository)
+    metadata = {"hub_url": hub, "hub_workspace_id": selection_headers.get("X-Workspace-ID", ""), "repository_external_id": data["repository"]["external_id"],
                 "run_id": data["review"]["run"]["run_id"], "idempotency_key": key,
                 "payload_sha256": "sha256:" + hashlib.sha256(payload).hexdigest(), "envelope_sha256": file_hash}
     if dry_run:
         return {**metadata, "status": "ready_to_publish", "message": "Validated locally. No credential was read and no network request was made. Publishing may create a repository and queue Jira deliveries already configured in the workspace."}
-    token = token_for(hub)
+    token = token_for(hub, repository)
     request = urllib.request.Request(hub + "/api/v1/review-imports", data=payload, method="POST", headers={
         "Authorization": "Bearer " + token, "Content-Type": "application/json",
-        "Accept": "application/json", "Idempotency-Key": key,
+        "Accept": "application/json", "Idempotency-Key": key, **selection_headers,
     })
     try:
         with opener_for(repository, hub).open(request, timeout=timeout) as response:
@@ -222,6 +246,8 @@ def publish(repository: Path, path: Path, timeout: int, dry_run: bool = False) -
         raise PublishError("Invalid Hub response. Outcome is uncertain; retry the exact same envelope.") from exc
     if status == 200:
         summary["repository_created"] = False  # Replayed receipts describe this call, not the original creation.
+    if metadata["hub_workspace_id"] and summary.get("organization_id") != metadata["hub_workspace_id"]:
+        raise PublishError("Hub returned a different or missing workspace ID. Publication may have completed; inspect the server before retrying or switching workspaces.")
     result = {**metadata, **summary, "status": "published" if status == 201 else "already_published", "http_status": status}
     if summary.get("organization_id"):
         result["workspace_url"] = hub + "/w/" + summary["organization_id"] + "/"

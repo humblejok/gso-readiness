@@ -2,9 +2,14 @@
   "schema_version": "1.0",
   "project": {
     "profile": "auto",
-    "security_scanner": "auto"
+    "security_scanner": "auto",
+    "git_provider": "auto",
+    "azure_api_version": "6.0",
+    "hub_credential_ref": "default",
+    "azure_credential_ref": "default"
   },
   "user": {
+    "azure_auth": "auto",
     "hub_url": "https://hub.example.invalid",
     "jfrog_server_id": "corp-xray",
     "jfrog_url": "https://artifactory.example.invalid",

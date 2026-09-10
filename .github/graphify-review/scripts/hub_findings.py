@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 
 from export_review import read_json, write_new_json
-from publish_review import PublishError, configured_hub, opener_for, token_for
+from publish_review import PublishError, configured_hub, opener_for, token_for, workspace_headers
 from review_settings import load_settings
 from targeted_contract import validate_targeted
 
@@ -23,7 +23,7 @@ def request_json(root, method, path, data=None, expected_hub=None):
         raise PublishError("Invalid internal Hub endpoint.")
     payload = json.dumps(data, ensure_ascii=False, allow_nan=False).encode() if data is not None else None
     request = urllib.request.Request(hub + path, data=payload, method=method, headers={
-        "Authorization": "Bearer " + token_for(hub), "Accept": "application/json", "Content-Type": "application/json"})
+        "Authorization": "Bearer " + token_for(hub, root), "Accept": "application/json", "Content-Type": "application/json", **workspace_headers(root)})
     try:
         with opener_for(root, hub).open(request, timeout=30) as response:
             raw = response.read(10 * 1024 * 1024 + 1)

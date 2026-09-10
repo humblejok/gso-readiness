@@ -12,6 +12,10 @@ from .tenancy import TenantManager
 class User(AbstractUser):
     email = models.EmailField(unique=True)
     email_verified = models.BooleanField(default=False)
+    is_tech_lead = models.BooleanField(
+        default=False,
+        help_text="Instance-wide API privilege across workspaces. Does not grant Django staff or superuser access.",
+    )
 
     class Meta:
         constraints = [models.UniqueConstraint(Lower("email"), name="user_email_case_unique")]
@@ -20,6 +24,7 @@ class User(AbstractUser):
 class Organization(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=160)
+    management_revision = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     suspended = models.BooleanField(default=False)
     deletion_requested_at = models.DateTimeField(null=True, blank=True)
@@ -109,6 +114,33 @@ class ApiClient(TenantRecord):
     repository_external_id = models.CharField(max_length=500, blank=True)
     revoked_at = models.DateTimeField(null=True)
     expires_at = models.DateTimeField()
+
+
+class UserApiToken(models.Model):
+    """Global authentication control record; never a tenant-data manager bypass."""
+
+    SCOPES = [
+        ("workspaces:read", "List and read all workspaces"),
+        ("workspaces:write", "Create workspaces and edit workspace names"),
+        ("reviews:write", "Import reviews and submit evidence-based revalidation"),
+        ("findings:read", "Read findings and remediation"),
+        ("findings:write", "Queue/cancel implementation and edit remediation drafts"),
+        ("findings:implement", "Claim and complete queued implementations"),
+    ]
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    name = models.CharField(max_length=100)
+    token_hash = models.CharField(max_length=128)
+    scopes = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    revoked_at = models.DateTimeField(null=True)
+
+
+class UserTokenEvent(models.Model):
+    token = models.ForeignKey(UserApiToken, on_delete=models.CASCADE, related_name="events")
+    created_at = models.DateTimeField(auto_now_add=True)
+    action = models.CharField(max_length=30)
 
 
 class Repository(TenantRecord):
@@ -207,6 +239,73 @@ class FindingActivity(TenantRecord):
                 condition=models.Q(status="running"),
                 name="one_running_implementation",
             ),
+        ]
+
+
+class ChangeRequest(TenantRecord):
+    class Kind(models.TextChoices):
+        BUG = "bug", "Bug fix"
+        FEATURE = "feature", "Feature request"
+
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        ANALYZED = "analyzed", "Analyzed"
+        SPECIFIED = "specified", "Specified"
+        IMPLEMENTED = "implemented", "Implemented"
+        CLOSED = "closed", "Closed"
+
+    kind = models.CharField(max_length=10, choices=Kind.choices)
+    description = models.TextField(max_length=20000)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
+    created_by = models.CharField(max_length=254)
+    updated_at = models.DateTimeField(auto_now=True)
+    revision = models.PositiveIntegerField(default=1)
+    payload_bytes = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(kind__in=["bug", "feature"]), name="request_kind_valid"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(
+                    status__in=["open", "analyzed", "specified", "implemented", "closed"]
+                ),
+                name="request_status_valid",
+            ),
+        ]
+        indexes = [models.Index(fields=["organization", "status", "-updated_at"])]
+
+    @property
+    def next_status(self):
+        states = list(self.Status.values)
+        index = states.index(self.status)
+        return states[index + 1] if index + 1 < len(states) else None
+
+
+class ChangeRequestActivity(TenantRecord):
+    """Append-only snapshots of user edits and workflow transitions."""
+
+    change_request = models.ForeignKey(
+        ChangeRequest, on_delete=models.CASCADE, related_name="activities"
+    )
+    actor = models.CharField(max_length=254)
+    action = models.CharField(
+        max_length=16,
+        choices=[("created", "Created"), ("edited", "Edited"), ("transitioned", "Status changed")],
+    )
+    revision = models.PositiveIntegerField()
+    kind = models.CharField(max_length=10, choices=ChangeRequest.Kind.choices)
+    description = models.TextField()
+    previous_status = models.CharField(max_length=16, blank=True)
+    status = models.CharField(max_length=16, choices=ChangeRequest.Status.choices)
+    payload_bytes = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["change_request", "revision"], name="request_revision_unique"
+            )
         ]
 
 

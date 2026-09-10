@@ -45,7 +45,7 @@ Update the `.github` kit in the reviewed project and deploy/restart the updated 
 For Azure DevOps Server 2020, configure this once in Copilot chat (replace the placeholder with the collection part of your Git remote, excluding `/Project/_git/repository`):
 
 ```text
-/configure-review git-provider=azure-devops azure-api-version=6.0 azure-devops-url=https://ado.example.invalid/CollectionName azure-auth=windows
+/configure-review git-provider=azure-devops azure-api-version=6.0 azure-trust-collection=https://ado.example.invalid/CollectionName project-azure-auth=windows
 /doctor-review network=true
 ```
 
@@ -59,9 +59,36 @@ The Windows API bridge uses the signed-in Windows identity through PowerShell/.N
 
 The bridge uses Windows certificate trust, saved/environment proxy and `NO_PROXY`; it does not import a PEM file into Windows, read Git credentials, enable proxy Windows credentials automatically, bypass script execution policy or disable TLS. Ask IT to provision trusted corporate certificates/approve the supplied `.ps1` if needed. For an internal host, configure proxy bypass only if your network permits direct access. A read-only success confirms repository access, not permission to push/create PRs.
 
-If Windows authentication is unavailable, select `azure-auth=pat` and use your own terminal to run `azure_devops.py login` with the review Python interpreter. This saves a PAT in native OS credential storage for that collection only. Use least-privilege Code read/write access and repository PR permissions. Never paste it into chat or settings. PAT transport supports macOS/Linux too and uses the saved PEM/proxy configuration. For approved secret-manager use, `GRAPHIFY_AZURE_PAT` requires a matching `GRAPHIFY_AZURE_PAT_URL`; it does not reuse the Hub token. `azure-auth=auto` chooses Windows identity on Windows for on-premises hosts, PAT otherwise; authentication errors never silently switch modes.
+If Windows authentication is unavailable, select `project-azure-auth=pat azure-credential-ref=default` and use your own terminal to run `azure_devops.py login --repository .` with the review Python interpreter. This saves a PAT in native OS storage for that collection, stable project ID and reference only; other projects' tokens are unchanged. Use least-privilege Code read/write access and repository PR permissions. Never paste it into chat or settings. PAT transport supports macOS/Linux too and uses saved PEM/proxy configuration. `GRAPHIFY_AZURE_PAT` secret-manager overrides require matching URL, project ID and explicit-reference bindings; see [project credential configuration](docs/project_connections.md#headless-environment-overrides). The project authentication choice overrides the user/company default; `auto` chooses Windows identity on Windows/on-premises, PAT otherwise. Authentication errors never silently switch modes.
 
 Then use `/implement-findings` as usual. Azure creates an active PR to the original branch, verifies the exact source commit and repository, and never enables auto-completion. An uncertain create response is recovered using the same saved attempt; the adapter refuses to blindly POST a second PR. API 6.0 is the default for Server 2020 compatibility; 7.0/7.1 are optional for newer deployments. GitHub support is preserved; GitLab/Bitbucket and Azure SSH remotes are not yet supported by the PR adapter. See [workflow details](docs/finding_implementation_workflow.md#hosting-adapters).
+
+### Multiple collections and project-specific tokens
+
+There is no longer one active Azure collection to switch globally. Each checkout uses its Git remote; approve multiple collections once:
+
+```text
+/configure-review azure-trust-collection=https://ado.example.invalid/CollectionA
+/configure-review azure-trust-collection=https://ado.example.invalid/CollectionB
+```
+
+These approvals are additive and stored in the user's settings outside Git. The old single `azure_devops_url` remains compatible until migrated to the new `azure_devops_collections` list. Remove an approval with `azure-untrust-collection=<url>`; this neither deletes credentials nor removes other approvals.
+
+For a dedicated token in each project, configure non-secret references, then run its terminal login helper:
+
+```text
+/configure-review hub-credential-ref=default azure-credential-ref=default
+```
+
+```powershell
+.\.graphify-review-venv\Scripts\python.exe .github\graphify-review\scripts\publish_review.py login --repository .
+# Only when this project uses Azure PAT authentication:
+.\.graphify-review-venv\Scripts\python.exe .github\graphify-review\scripts\azure_devops.py login --repository .
+```
+
+Storage is scoped to **destination + stable project ID + reference**. Identical reference names in different projects do not share tokens. An explicit reference never falls back to an old destination-wide token. Use `project-azure-auth=pat` to choose PAT authentication for one project without changing other projects. Commit changed non-secret project settings before running `/implement-findings`.
+
+The company preset can contain shared provider/API/auth defaults and standard reference labels, without a collection-specific URL or project ID. An administrator can optionally distribute a list of approved collections. See [presets, migration, token rotation and CI configuration](docs/project_connections.md). This is a kit-side enhancement; no Hub server change or migration is required.
 
 ## Guided setup (recommended)
 
@@ -572,6 +599,8 @@ The first command must include `scaScanStatusCode: 0`; the second must include `
 
 ## Publish results to the configured Hub
 
+For architects working across workspaces, the Hub also supports scoped **personal tech-lead tokens**. An operator grants the user-level attribute; the user issues a token under **Personal tokens**. Configure the target checkout with `/configure-review hub-workspace-id=<workspace-UUID>`, then use the existing terminal token login. This is an instance-wide privilege, not a workspace-admin role. See [setup, limits and management API](docs/tech_lead_tokens.md).
+
 Use `/publish-review` to send a completed review and its remediation plans. The Hub automatically creates the project (called a **repository** internally) if its stable repository ID does not exist in the authenticated workspace. Subsequent runs use that same project. You do not have to create the project manually.
 
 When a Hub URL is configured, `/full-project-review` now includes local envelope preparation after successful validation for **fresh, revalidate and rescore** runs. Each run has its own `<run-dir>/hub/import-envelope.json`, including that run's complete reconciliation and source-bound remediation plans. Earlier envelopes are never overwritten. The final response explicitly reports Hub export readiness or the blocker; missing metadata/plans must not be mistaken for a ready envelope. No token or reachable Hub is needed for this local step, and nothing is uploaded automatically.
@@ -604,7 +633,7 @@ python3 .github/graphify-review/scripts/bootstrap_environment.py
 .graphify-review-venv/bin/python .github/graphify-review/scripts/publish_review.py login
 ```
 
-Login saves a token locally; it does not contact the Hub or prove its permissions. Authentication is checked when publishing. The helper uses [keyring's native OS backends](https://keyring.readthedocs.io/en/latest/): macOS Keychain, Windows Credential Locker, or Linux Secret Service. Linux requires an unlocked desktop keyring and D-Bus session. There is no plaintext-file fallback. One token is saved per canonical Hub URL; log in again to switch workspace tokens or rotate an expired token. Changing the Hub URL never forwards the old token to the new destination.
+Login saves a token locally; it does not contact the Hub or prove its permissions. Authentication is checked when publishing. The helper uses [keyring's native OS backends](https://keyring.readthedocs.io/en/latest/): macOS Keychain, Windows Credential Locker, or Linux Secret Service. Linux requires an unlocked desktop keyring and D-Bus session. There is no plaintext-file fallback. New logins require a stable project ID and store a token per canonical Hub URL + project ID + `hub_credential_ref` (default label `default`). Set an explicit reference for strict selection without legacy destination-wide fallback. Repeating login replaces only that project's selected credential; use distinct references for different workspace tokens. Changing the Hub URL never forwards an old token to a new destination. Finish active implementation claims before rotating their token/reference. See [credential migration and logout behavior](docs/project_connections.md#existing-credentials-rotation-and-logout).
 
 ### Publish from Copilot
 
@@ -636,7 +665,7 @@ For a timeout, connection failure or server error, retry using **the exact same 
 
 On Windows substitute `.graphify-review-venv\Scripts\python.exe`. Run from the reviewed project root, or pass `--repository <project-root>`. Logout removes only the local token for the currently configured Hub; revoke it in the Hub to invalidate other copies. Existing browser uploads remain an option if native credential storage is unavailable.
 
-For headless/CI use, an approved secret manager can inject `FINDING_HUB_TOKEN` and **matching** `FINDING_HUB_TOKEN_URL` into the process environment. Both are required together; this overrides a saved OS credential. No `--token` argument, credential URL, preset token or committed environment file is supported. Do not paste a token assignment into chat or shell history. To return to native credential storage, remove both injected variables.
+For headless/CI use, an approved secret manager can inject `FINDING_HUB_TOKEN` and **matching** `FINDING_HUB_TOKEN_URL` into the process environment. Configured projects also require `FINDING_HUB_TOKEN_REPOSITORY_ID` to match their stable ID; an explicit reference additionally requires matching `FINDING_HUB_TOKEN_CREDENTIAL_REF`. These override a saved OS credential only when all bindings match. Update existing CI secret injection with this non-secret metadata. No `--token` argument, credential URL, preset token or committed environment file is supported. Do not paste token assignments into chat or shell history. To return to native storage, remove the injected token and its binding variables. See [headless configuration](docs/project_connections.md#headless-environment-overrides).
 
 Publishing uses the saved proxy, `NO_PROXY` and approved PEM CA bundle. Java `cacerts` is not a PEM bundle. TLS verification remains enabled and redirects are refused, even within the same host; configure the final Hub base URL. Authentication failures require token replacement, while `403` may also mean missing scope, repository restriction, an inactive workspace or a quota. Server errors are sanitized; ask your Hub operator to investigate server logs rather than enabling credential-bearing HTTP debug output.
 

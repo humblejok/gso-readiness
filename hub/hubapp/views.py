@@ -28,6 +28,8 @@ from .imports import ImportConflict, import_review
 from .models import (
     ApiClient,
     AuditEvent,
+    ChangeRequest,
+    ChangeRequestActivity,
     Finding,
     FindingActivity,
     Invitation,
@@ -787,6 +789,57 @@ def export(request, organization_id):
                 }
                 yield ("" if first else ",") + canonical(record)
                 first = False
+            for name, model, fields in (
+                (
+                    "change_requests",
+                    ChangeRequest,
+                    (
+                        "id",
+                        "created_at",
+                        "updated_at",
+                        "created_by",
+                        "kind",
+                        "description",
+                        "status",
+                        "revision",
+                    ),
+                ),
+                (
+                    "change_request_activities",
+                    ChangeRequestActivity,
+                    (
+                        "id",
+                        "change_request_id",
+                        "created_at",
+                        "actor",
+                        "action",
+                        "revision",
+                        "kind",
+                        "description",
+                        "previous_status",
+                        "status",
+                    ),
+                ),
+            ):
+                yield '],"' + name + '":['
+                first = True
+                for record in (
+                    model.objects.order_by("created_at", "pk")
+                    .values(*fields)
+                    .iterator(chunk_size=20)
+                ):
+                    if not Membership.objects.filter(
+                        user_id=user_id,
+                        organization_id=organization_id,
+                        role__in=["owner", "admin"],
+                    ).exists():
+                        return
+                    record = {
+                        key: value if isinstance(value, int) else str(value)
+                        for key, value in record.items()
+                    }
+                    yield ("" if first else ",") + canonical(record)
+                    first = False
             yield "]}"
 
     response = StreamingHttpResponse(chunks(), content_type="application/json")

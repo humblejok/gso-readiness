@@ -1,4 +1,4 @@
-"""Token API: workspace identity comes exclusively from authenticated token ownership."""
+"""Token API: authentication selects one tenant; workspace tokens cannot switch ownership."""
 
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
