@@ -1,5 +1,7 @@
 # Targeted revalidation and Hub implementation workflow
 
+Build/test execution now uses source-bound native-process receipts to avoid PowerShell pipeline/stale-exit-code confusion. See [PowerShell validation and the proposed Sonar compliance gate](implementation_validation.md). Sonar is not yet enforced; it needs the corporate server/scanner/CI configuration and cannot be inferred from a passing targeted check.
+
 This extends the [Finding Hub specification](graphify_finding_hub_spec.md). It separates a human-selected implementation queue, agent execution on the developer machine, and evidence-backed lifecycle updates. The Hub is a registry, not a remote code execution service.
 
 ## User workflow
