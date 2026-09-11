@@ -34,9 +34,35 @@ The runner attempts to terminate its own process tree on timeout/output limit; i
 
 This is an execution/evidence aid, not a security sandbox or automatic certification. Agents must still inspect commands, respect network/installation permissions, verify test counts/skips and prove the finding corrected. Do not edit receipts, suppress errors globally, disable TLS or weaken execution policy to make checks pass. The Windows-specific batch test is skipped outside Windows; run `test_run_validation.py` on supported Windows hosts before corporate rollout.
 
-## Sonar compliance — proposed, not yet enforced
+## Optional Sonar MCP review — implemented
 
-The kit does **not yet run or enforce your corporate Sonar Quality Gate**. Passing compilation and targeted revalidation does not guarantee compliance with the server's active rules.
+Run `/implement-findings` as usual. When Sonar MCP tools are enabled in the VS Code chat, the implementation manager uses them for a scoped assessment before independent revalidation. No additional kit token, Python Sonar client or command parameter is needed. This integration runs in Copilot, not inside the Python delivery helper.
+
+In VS Code, make your existing corporate Sonar MCP available in the chat tool picker alongside the core agent, read, search, edit and execute tools. The implementation agent and prompt intentionally omit a fixed `tools` list, allowing the chat's selected tools to be used regardless of your MCP server name. This widens tool visibility; the workflow only authorizes its core operations and approved Sonar read/analysis calls. It does not disable VS Code permissions. Independent verifiers keep restricted tool lists. For an enforced corporate allowlist, add the core tools plus **specific read/analysis tool IDs from your actual server** to the manager's `tools` header; do not override them with a prompt-level list that omits Sonar. See [VS Code tool selection priority](https://code.visualstudio.com/docs/agent-customization/prompt-files#tool-list-priority) and [custom agent tool configuration](https://code.visualstudio.com/docs/agent-customization/custom-agents#custom-agent-file-structure).
+
+The manager discovers available capabilities rather than hard-coding a server name. Actual Sonar MCP schemas and language support vary; the configured project binding and access to the implementation worktree must be verified. An IDE or container looking at the original checkout cannot validate edits in the separate feature worktree. A supported content-based analysis can be used only when it really consumes the supplied current content. Otherwise the assessment reports unavailable without changing mounts or copying code back. See the [official Sonar MCP documentation](https://github.com/SonarSource/sonarqube-mcp-server#tools).
+
+The correction pass assesses unused imports, private fields, variables and similar simple issues in already-changed files, including pre-existing warnings there. It checks reflection, DI, serialization, public APIs and side effects before removal. Ambiguous findings and unrelated cleanup are deferred. There are at most three correction rounds, with fresh analysis and relevant tests after edits, followed by the existing independent revalidation. Introduced regressions or required-check failures still fail the implementation; optional Sonar unavailability alone does not.
+
+Each attempt gets an agent-written `sonar-assessment.md` beside its state/logs, outside committed source. It records tool/project/source identity, analyzed and skipped paths, fixed/deferred issues and reasons, limitations and validation references. The Hub completion/failure comment and final response include a concise Sonar summary. `assessed`, `partial` and `unavailable` describe coverage, **not a passed Quality Gate**. No issues are automatically closed in Sonar, no rules are suppressed, and no additional Hub findings are created.
+
+If the summary says unavailable, check whether the correct server's tools are enabled, the Sonar project binding is unambiguous, the language is supported, and the tool can see the feature worktree. Keep credentials, proxy and certificate configuration in your approved MCP setup; never paste tokens in chat. Missing tools are not auto-installed or reconfigured.
+
+### Acceptance checks in VS Code
+
+The repository tests guard command wiring and safety instructions; they cannot simulate Copilot's decisions or a live corporate Sonar server. Before rollout, exercise:
+
+- Sonar absent/disabled: normal implementation continues, with explicit unavailable reporting rather than zero issues.
+- A server with a nonstandard name: its enabled tools are discovered without renaming it.
+- A safe unused import in an edited file: scoped correction, fresh analysis/tests, then independent verification.
+- A field used by DI/reflection or an initializer with side effects: assess usage and preserve behavior; defer if uncertain.
+- Original-checkout-only mount, ambiguous project or unsupported language: no stale-source success and no unapproved upload/reconfiguration.
+- Old main-branch issues/gate, paginated/truncated results or analysis failure after an edit: report limits; never certify final source from those results.
+- Persistent introduced regression or mandatory gate failure: leave the finding open/queued; optional legacy debt remains explicitly deferred.
+
+## Full Sonar Quality Gate — proposed, not yet enforced by the helper
+
+The optional MCP assessment does **not enforce your corporate Sonar Quality Gate**. Passing compilation, file analysis and targeted revalidation does not guarantee compliance with every server rule. Existing repository/user-required checks remain mandatory; the agent must stop rather than resolve early when the current workflow cannot satisfy them.
 
 Recommended integration:
 

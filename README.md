@@ -36,6 +36,8 @@ Then use either:
 
 Without a filter, all queued open findings for this configured project are selected. Each runs sequentially in an isolated worktree on `feature/<short-ID>`, from the original checkout's commit. The remote branch is created before edits. A passing independent revalidation allows an explicit-file commit; a second revalidation of that clean commit precedes pushing and creating a PR to the original branch. Only then is the Hub finding resolved, unqueued and given a factual summary/PR link. **Resolved on the feature branch does not mean merged or deployed.** Nothing automatically merges a PR or resolves Jira.
 
+If your configured **Sonar MCP** tools are enabled in VS Code chat, `/implement-findings` uses them automatically before revalidation. It assesses safe fixes such as unused imports/fields/variables in edited files, reruns relevant checks, and includes fixed/deferred issues or an unavailability reason in the Hub comment. No extra command parameter or kit token is needed. Tool access to the actual feature worktree is required; file-level feedback is not a full Quality Gate. See [setup, safety limits and troubleshooting](docs/implementation_validation.md#optional-sonar-mcp-review--implemented).
+
 Failures keep the finding open and queued with a reason when the Hub claim is still valid. Existing feature branches block rather than being overwritten. Cancellation, edited proposals and newer imported reviews invalidate stale workers. Worktrees/branches are retained for inspection; uncertain Hub writes retry the identical saved completion. See [recovery, permissions and API details](docs/finding_implementation_workflow.md).
 
 ### Azure DevOps Server and Services
