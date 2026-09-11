@@ -6,6 +6,12 @@ This kit is licensed under [GNU AGPL-3.0-only](LICENSE), without warranty. Retai
 
 This directory contains the policy, strict v2 schemas, deterministic scripts, examples, tests, viewer, and generated-output location for the VS Code Graphify production review kit.
 
+## Analyze Hub bug and feature requests
+
+Run `/analyse-requests` or `/analyse-requests requests=<request-UUID>,<request-UUID>`. The currently selected model analyzes Open requests assigned to this checkout's configured Hub project, asks clarifying questions, and writes implementation specifications covering backend/frontend scope and new/changed/breaking interfaces. No subagents, application edits, branches, PRs or finding claims are involved. Blocking questions leave requests Open; successful submission marks them Analyzed. Review/edit the result in the Hub and click **Accept analysis** to mark it Specified. The creator may cancel until implementation.
+
+Requires the updated Hub with migration **0009**, an assigned Project on each request, and token scopes **requests:read** and **requests:analyse**. Personal tech-lead tokens also need the saved workspace ID. Existing credentials/proxy/CA setup is reused; never paste secrets in chat. Existing unassigned requests are not included. UUIDs are shown on request details. The helper `scripts/hub_requests.py` saves source-bound state/analysis/submission artifacts under `output/request-analyses/`. Stale revisions/cancellation/source changes block submission; uncertain writes must retry the identical saved payload. No analysis token can accept or cancel a request.
+
 Start with [`policy.yaml`](policy.yaml), then follow the manager lifecycle in `../agents/review-manager.agent.md`. The root repository `README.md` documents commands and output contracts.
 
 Important authorities:

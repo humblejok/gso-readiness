@@ -126,6 +126,8 @@ class UserApiToken(models.Model):
         ("findings:read", "Read findings and remediation"),
         ("findings:write", "Queue/cancel implementation and edit remediation drafts"),
         ("findings:implement", "Claim and complete queued implementations"),
+        ("requests:read", "Read project requests"),
+        ("requests:analyse", "Submit analysis for open requests (not accept it)"),
     ]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
@@ -253,11 +255,16 @@ class ChangeRequest(TenantRecord):
         SPECIFIED = "specified", "Specified"
         IMPLEMENTED = "implemented", "Implemented"
         CLOSED = "closed", "Closed"
+        CANCELLED = "cancelled", "Cancelled"
 
     kind = models.CharField(max_length=10, choices=Kind.choices)
     description = models.TextField(max_length=20000)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
     created_by = models.CharField(max_length=254)
+    repository_external_id = models.CharField(max_length=500, blank=True)
+    analysis = models.JSONField(default=dict, blank=True)
+    analysis_submission_id = models.UUIDField(null=True, blank=True)
+    analysis_submission_digest = models.CharField(max_length=64, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
     revision = models.PositiveIntegerField(default=1)
     payload_bytes = models.PositiveIntegerField(default=0)
@@ -269,7 +276,14 @@ class ChangeRequest(TenantRecord):
             ),
             models.CheckConstraint(
                 condition=models.Q(
-                    status__in=["open", "analyzed", "specified", "implemented", "closed"]
+                    status__in=[
+                        "open",
+                        "analyzed",
+                        "specified",
+                        "implemented",
+                        "closed",
+                        "cancelled",
+                    ]
                 ),
                 name="request_status_valid",
             ),
@@ -278,7 +292,9 @@ class ChangeRequest(TenantRecord):
 
     @property
     def next_status(self):
-        states = list(self.Status.values)
+        states = ["open", "analyzed", "specified", "implemented", "closed"]
+        if self.status not in states:
+            return None
         index = states.index(self.status)
         return states[index + 1] if index + 1 < len(states) else None
 
@@ -297,6 +313,8 @@ class ChangeRequestActivity(TenantRecord):
     revision = models.PositiveIntegerField()
     kind = models.CharField(max_length=10, choices=ChangeRequest.Kind.choices)
     description = models.TextField()
+    repository_external_id = models.CharField(max_length=500, blank=True)
+    analysis = models.JSONField(default=dict, blank=True)
     previous_status = models.CharField(max_length=16, blank=True)
     status = models.CharField(max_length=16, choices=ChangeRequest.Status.choices)
     payload_bytes = models.PositiveIntegerField(default=0)

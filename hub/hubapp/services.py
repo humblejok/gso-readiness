@@ -82,7 +82,17 @@ def usage():
 
 
 def issue_token(name, scopes, repository_external_id="", days=90):
-    if not set(scopes) <= {"reviews:write", "findings:read", "findings:implement"} or not scopes:
+    if (
+        not set(scopes)
+        <= {
+            "reviews:write",
+            "findings:read",
+            "findings:implement",
+            "requests:read",
+            "requests:analyse",
+        }
+        or not scopes
+    ):
         raise ValidationError("Invalid token scopes.")
     secret = secrets.token_urlsafe(32)
     token = ApiClient.objects.create(

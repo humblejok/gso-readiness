@@ -186,8 +186,9 @@ def test_postgres_concurrent_request_update_has_one_winner(org, owner):
                         item.pk,
                         revision=1,
                         actor=owner.username,
-                        action="transition",
-                        status="analyzed",
+                        action="edit",
+                        kind="feature",
+                        description="Revised feature",
                     )
                     return "updated"
                 except change_requests.RequestConflict:

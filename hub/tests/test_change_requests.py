@@ -1,5 +1,6 @@
 import copy
 import json
+import uuid
 from datetime import timedelta
 from io import StringIO
 
@@ -11,7 +12,14 @@ from django.test import Client
 from django.utils import timezone
 
 from hubapp import change_requests
-from hubapp.models import AuditEvent, ChangeRequest, ChangeRequestActivity, Membership, Subscription
+from hubapp.models import (
+    AuditEvent,
+    ChangeRequest,
+    ChangeRequestActivity,
+    Membership,
+    Repository,
+    Subscription,
+)
 from hubapp.services import create_workspace, usage
 from hubapp.tenancy import tenant_scope
 
@@ -19,9 +27,30 @@ from hubapp.tenancy import tenant_scope
 @pytest.fixture
 def item(org, owner):
     with tenant_scope(org.id):
+        Repository.objects.create(organization_id=org.id, external_id="repo:orders", name="Orders")
         return change_requests.create(
-            kind="bug", description="Login fails after a timeout.", actor=owner.username
+            kind="bug",
+            description="Login fails after a timeout.",
+            actor=owner.username,
+            repository_external_id="repo:orders",
         )
+
+
+def analyze(item, actor):
+    return change_requests.submit_analysis(
+        item.pk,
+        revision=item.revision,
+        actor=actor,
+        repository_external_id=item.repository_external_id,
+        submission_id=str(uuid.uuid4()),
+        analysis={
+            "project_kind": "backend",
+            "specification": "Add regression coverage and correct session handling.",
+            "new_interfaces": "None: existing login only.",
+            "changed_interfaces": "Login behavior corrected.",
+            "breaking_changes": "None: restores the existing contract.",
+        },
+    )
 
 
 @pytest.mark.parametrize("kind", ["bug", "feature"])
@@ -41,7 +70,7 @@ def test_create_edit_and_history(client, owner, org, kind):
         assert item.created_by == owner.username
     url = base + f"{item.pk}/"
     assert response.url == url
-    assert b"Mark analyzed" in client.get(url).content
+    assert b"/analyse-requests" in client.get(url).content
     response = client.post(
         url,
         {
@@ -69,10 +98,17 @@ def test_workflow_no_skips_backwards_or_closed_edits(client, owner, org, item):
     url = f"/w/{org.id}/requests/{item.pk}/"
     response = client.post(url, {"action": "transition", "status": "implemented", "revision": 1})
     assert b"stages cannot be skipped" in response.content
-    for revision, status in enumerate(["analyzed", "specified", "implemented", "closed"], start=1):
+    with tenant_scope(org.id):
+        analyze(item, owner.username)
+    for revision, status in enumerate(["specified", "implemented", "closed"], start=2):
         assert (
             client.post(
-                url, {"action": "transition", "status": status, "revision": revision}
+                url,
+                {
+                    "action": "accept" if status == "specified" else "transition",
+                    "status": status,
+                    "revision": revision,
+                },
             ).status_code
             == 302
         )
@@ -100,9 +136,7 @@ def test_stale_forms_and_noop_save(org, owner, item):
             description=item.description,
         )
         assert ChangeRequestActivity.objects.count() == 1
-        change_requests.update(
-            item.pk, revision=1, actor=owner.username, action="transition", status="analyzed"
-        )
+        analyze(item, owner.username)
         with pytest.raises(change_requests.RequestConflict):
             change_requests.update(
                 item.pk,
@@ -150,7 +184,8 @@ def test_roles(client, owner, org, item, role):
     assert (b"Save changes" in page.content) == (role != "viewer")
     create = client.post(base + "new/", {"kind": "feature", "description": "New request"})
     edit = client.post(
-        base + f"{item.pk}/", {"action": "transition", "status": "analyzed", "revision": 1}
+        base + f"{item.pk}/",
+        {"action": "edit", "kind": "bug", "description": "Edited", "revision": 1},
     )
     assert create.status_code == edit.status_code == (403 if role == "viewer" else 302)
 
@@ -238,9 +273,7 @@ def test_storage_limit_rolls_back(settings, owner, org, item):
         with pytest.raises(ValidationError, match="storage allowance"):
             change_requests.create(kind="bug", description="New", actor=owner.username)
         with pytest.raises(ValidationError, match="storage allowance"):
-            change_requests.update(
-                item.pk, revision=1, actor=owner.username, action="transition", status="analyzed"
-            )
+            analyze(item, owner.username)
         item.refresh_from_db()
         assert item.status == "open" and item.revision == 1
         assert ChangeRequestActivity.objects.count() == ChangeRequest.objects.count() == 1

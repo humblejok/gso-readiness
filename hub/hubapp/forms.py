@@ -3,7 +3,7 @@ import re
 from django import forms
 from django.contrib.auth.forms import UserCreationForm
 
-from .models import ChangeRequest, User, UserApiToken
+from .models import ChangeRequest, Repository, User, UserApiToken
 
 
 class UserTokenForm(forms.Form):
@@ -18,12 +18,23 @@ class UserTokenForm(forms.Form):
 
 
 class ChangeRequestForm(forms.Form):
+    repository_external_id = forms.ChoiceField(
+        required=False,
+        label="Project",
+        help_text="Select a project before using /analyse-requests.",
+    )
     kind = forms.ChoiceField(choices=ChangeRequest.Kind.choices, label="Type")
     description = forms.CharField(
         max_length=20000,
         widget=forms.Textarea(attrs={"rows": 10}),
         help_text="Describe the bug and expected behavior, or the feature you would like. Maximum 20,000 characters.",
     )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["repository_external_id"].choices = [("", "Not assigned")] + [
+            (r.external_id, r.name) for r in Repository.objects.order_by("name")
+        ]
 
 
 class ChangeRequestEditForm(ChangeRequestForm):
@@ -37,6 +48,37 @@ class ChangeRequestTransitionForm(forms.Form):
         min_value=1, widget=forms.HiddenInput(attrs={"id": "transition_revision"})
     )
     status = forms.ChoiceField(choices=ChangeRequest.Status.choices, widget=forms.HiddenInput)
+
+
+class RequestAnalysisForm(forms.Form):
+    revision = forms.IntegerField(min_value=1, widget=forms.HiddenInput)
+    project_kind = forms.ChoiceField(
+        choices=[
+            ("backend", "Backend only"),
+            ("frontend", "Frontend only"),
+            ("fullstack", "Backend and frontend"),
+        ]
+    )
+    specification = forms.CharField(
+        max_length=64000,
+        widget=forms.Textarea(attrs={"rows": 22}),
+        label="Implementation specification (Markdown)",
+    )
+    new_interfaces = forms.CharField(
+        max_length=16000,
+        widget=forms.Textarea(attrs={"rows": 6}),
+        label="New routes / interoperability mechanisms (or None with a reason)",
+    )
+    changed_interfaces = forms.CharField(
+        max_length=16000,
+        widget=forms.Textarea(attrs={"rows": 6}),
+        label="Changed existing interfaces (or None with a reason)",
+    )
+    breaking_changes = forms.CharField(
+        max_length=16000,
+        widget=forms.Textarea(attrs={"rows": 6}),
+        label="Breaking changes and migration plan (or None with a reason)",
+    )
 
 
 class SignupForm(UserCreationForm):
@@ -74,6 +116,8 @@ class TokenForm(forms.Form):
             ("reviews:write", "Upload reviews"),
             ("findings:read", "Read findings"),
             ("findings:implement", "Claim and complete queued implementations"),
+            ("requests:read", "Read project requests"),
+            ("requests:analyse", "Submit request analysis (not accept it)"),
         ],
         widget=forms.CheckboxSelectMultiple,
     )

@@ -15,10 +15,21 @@
       "workspaceToken": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Shown-once workspace token: UUID.secret; scopes reviews:write, findings:read, findings:implement. Implementing requires both findings:read and findings:implement."
+        "description": "Shown-once workspace token: UUID.secret; scopes reviews:write, findings:read, findings:implement, requests:read, requests:analyse. Implementing requires both finding scopes; request analysis requires both request scopes and cannot accept/cancel requests. Personal tech-lead tokens require X-Workspace-ID for workspace endpoints."
       }
     },
     "schemas": {
+      "RequestAnalysis": {
+        "type": "object", "additionalProperties": false,
+        "required": ["project_kind", "specification", "new_interfaces", "changed_interfaces", "breaking_changes"],
+        "properties": {
+          "project_kind": {"enum": ["backend", "frontend", "fullstack"]},
+          "specification": {"type": "string", "minLength": 1, "maxLength": 64000},
+          "new_interfaces": {"type": "string", "minLength": 1, "maxLength": 16000},
+          "changed_interfaces": {"type": "string", "minLength": 1, "maxLength": 16000},
+          "breaking_changes": {"type": "string", "minLength": 1, "maxLength": 16000}
+        }
+      },
       "TargetedEnvelope": {"$ref": "./targeted-revalidation.schema.json"},
       "ImplementationRequest": {
         "oneOf": [
@@ -140,6 +151,37 @@
     }
   },
   "paths": {
+    "/api/v1/requests": {
+      "get": {
+        "operationId": "listProjectRequests",
+        "description": "Requires requests:read. Tenant and repository restricted, active projects only, pages of 50. Unassigned requests are excluded.",
+        "parameters": [
+          {"in": "query", "name": "repository_external_id", "required": true, "schema": {"type": "string"}},
+          {"in": "query", "name": "status", "schema": {"type": "string", "default": "open", "enum": ["open", "analyzed", "specified", "implemented", "closed", "cancelled"]}},
+          {"in": "query", "name": "ids", "schema": {"type": "string"}, "description": "Optional comma-separated list of at most 100 request UUIDs."},
+          {"in": "query", "name": "page", "schema": {"type": "integer", "minimum": 1, "default": 1}}
+        ],
+        "responses": {"200": {"description": "count, page, page_size and results including ID, project, kind, description, status, revision and analysis."}, "400": {"description": "Invalid filter"}, "403": {"description": "Insufficient scope"}}
+      }
+    },
+    "/api/v1/requests/{id}/analysis": {
+      "parameters": [{"in": "path", "name": "id", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "get": {
+        "operationId": "getRequestAnalysisContext",
+        "description": "Requires requests:read; tenant and repository restrictions apply.",
+        "responses": {"200": {"description": "Current request context, revision and analysis"}, "404": {"description": "Not found or inaccessible"}}
+      },
+      "post": {
+        "operationId": "submitRequestAnalysis",
+        "description": "Requires requests:read and requests:analyse. Only Open requests at the supplied revision/project may become Analyzed. Exact submission retries are idempotent while current; changed or cancelled requests conflict. Does not accept, implement or cancel requests.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "additionalProperties": false,
+          "required": ["revision", "repository_external_id", "submission_id", "analysis"],
+          "properties": {"revision": {"type": "integer", "minimum": 1}, "repository_external_id": {"type": "string", "minLength": 1}, "submission_id": {"type": "string", "format": "uuid"}, "analysis": {"$ref": "#/components/schemas/RequestAnalysis"}}
+        }}}},
+        "responses": {"200": {"description": "Analyzed request or identical replay"}, "400": {"description": "Invalid analysis"}, "403": {"description": "Scope or workspace write restriction"}, "404": {"description": "Not found or inaccessible"}, "409": {"description": "Revision/project/state changed or conflicting replay"}, "429": {"description": "Rate limit"}}
+      }
+    },
     "/api/v1/review-imports": {
       "post": {
         "operationId": "importReview",

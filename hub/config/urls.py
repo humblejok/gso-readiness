@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.contrib.auth import views as auth
 from django.urls import path
 
-from hubapp import api, request_views, tech_lead_api, user_token_views, views
+from hubapp import api, request_api, request_views, tech_lead_api, user_token_views, views
 from hubapp.account_views import HubLoginView, HubPasswordResetView
 
 urlpatterns = [
@@ -67,6 +67,8 @@ urlpatterns = [
     path("api/v1/repositories/<uuid:pk>", api.RepositoryDetailAPI.as_view()),
     path("api/v1/repositories/<uuid:repository_id>/findings", api.FindingsAPI.as_view()),
     path("api/v1/findings", api.FindingsAPI.as_view()),
+    path("api/v1/requests", request_api.RequestsAPI.as_view()),
+    path("api/v1/requests/<uuid:pk>/analysis", request_api.RequestAnalysisAPI.as_view()),
     path("api/v1/findings/<uuid:pk>", api.FindingDetailAPI.as_view()),
     path("api/v1/findings/<uuid:pk>/implementation", api.FindingWorkAPI.as_view()),
     path("api/v1/findings/<uuid:pk>/revalidation", api.FindingRevalidationAPI.as_view()),

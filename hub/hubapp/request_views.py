@@ -66,6 +66,7 @@ def detail(request, organization_id, pk):
             "kind": item.kind,
             "description": item.description,
             "revision": item.revision,
+            "repository_external_id": item.repository_external_id,
         }
     )
     transition_form = forms.ChangeRequestTransitionForm(
@@ -74,22 +75,33 @@ def detail(request, organization_id, pk):
             "revision": item.revision,
         }
     )
+    analysis_form = forms.RequestAnalysisForm(initial={**item.analysis, "revision": item.revision})
+    can_cancel = item.created_by == request.user.get_username() and item.status in {
+        "open",
+        "analyzed",
+        "specified",
+    }
     if request.method == "POST":
-        if request.membership.role not in {"owner", "admin", "reviewer"}:
+        action = request.POST.get("action")
+        if action == "cancel" and not can_cancel:
+            raise PermissionDenied("Only the creator can cancel before implementation.")
+        if action != "cancel" and request.membership.role not in {"owner", "admin", "reviewer"}:
             raise PermissionDenied
         require_writes()
-        action = request.POST.get("action")
         if action == "edit":
             form = edit_form = forms.ChangeRequestEditForm(request.POST)
-        elif action == "transition":
+        elif action in {"transition", "accept", "cancel"}:
             form = transition_form = forms.ChangeRequestTransitionForm(request.POST)
+        elif action == "edit_analysis":
+            form = analysis_form = forms.RequestAnalysisForm(request.POST)
         else:
             raise PermissionDenied("Unknown request action.")
         if form.is_valid():
+            data = dict(form.cleaned_data)
+            if action == "edit_analysis":
+                data = {"revision": data.pop("revision"), "analysis": data}
             try:
-                change_requests.update(
-                    pk, action=action, actor=request.user.get_username(), **form.cleaned_data
-                )
+                change_requests.update(pk, action=action, actor=request.user.get_username(), **data)
             except ChangeRequest.DoesNotExist as error:
                 raise Http404 from error
             except ValidationError as error:
@@ -103,8 +115,12 @@ def detail(request, organization_id, pk):
         item=item,
         edit_form=edit_form,
         transition_form=transition_form,
+        analysis_form=analysis_form,
+        can_cancel=can_cancel,
         activities=Paginator(
             ChangeRequestActivity.objects.filter(change_request=item).order_by("-revision"), 20
         ).get_page(request.GET.get("page")),
-        statuses=ChangeRequest.Status.choices,
+        statuses=[
+            (value, label) for value, label in ChangeRequest.Status.choices if value != "cancelled"
+        ],
     )

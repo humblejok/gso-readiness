@@ -5,20 +5,30 @@
 <h1>{{ item.get_kind_display }}</h1>
 <p><span class="badge">{{ item.get_status_display }}</span> · Created by {{ item.created_by }} · {{ item.created_at }}</p>
 <p class="muted">Request ID: <code>{{ item.pk }}</code> · Revision {{ item.revision }}</p>
-{% if item.status == 'closed' %}{{ edit_form.non_field_errors }}{{ transition_form.non_field_errors }}{% endif %}
+<p>Project: {{ item.repository_external_id|default:"Not assigned — select a project in Edit request before analysis." }}</p>
+{{ edit_form.non_field_errors }}{{ transition_form.non_field_errors }}{{ analysis_form.non_field_errors }}
 <section class="panel"><h2>Workflow</h2>
 <ol class="request-workflow" aria-label="Request workflow">{% for value,label in statuses %}<li{% if item.status == value %} aria-current="step"{% endif %}>{{ label }}</li>{% endfor %}</ol>
-<p class="muted">Each stage is recorded manually. Changing status does not run a coding agent or create a pull request.</p>
+<p class="muted">/analyse-requests saves a specification and marks the request Analyzed. Review and accept it to mark it Specified. No code, branch or PR is created by analysis.</p>
 {% if writable and request.membership.role != 'viewer' and item.next_status %}
-<form method="post">{% csrf_token %}{{ transition_form.as_p }}<button name="action" value="transition">Mark {{ item.next_status }}</button></form>
-{% elif item.status == 'closed' %}<p>This request is closed and read-only.</p>{% endif %}
+{% if item.status == 'analyzed' %}<form method="post">{% csrf_token %}{{ transition_form.as_p }}<button name="action" value="accept">Accept analysis — mark Specified</button></form>
+{% elif item.status != 'open' %}<form method="post">{% csrf_token %}{{ transition_form.as_p }}<button name="action" value="transition">Mark {{ item.next_status }}</button></form>{% endif %}
+{% elif item.status == 'closed' %}<p>This request is closed and read-only.</p>{% elif item.status == 'cancelled' %}<p>This request is cancelled and read-only.</p>{% endif %}
+{% if writable and can_cancel %}<form method="post">{% csrf_token %}<input type="hidden" name="revision" value="{{ item.revision }}"><input type="hidden" name="status" value="cancelled"><button class="quiet" name="action" value="cancel">Cancel request</button></form>{% endif %}
 </section>
 <section class="panel"><h2>Description</h2><p class="preserve-lines request-description">{{ item.description }}</p>
-{% if writable and request.membership.role != 'viewer' and item.status != 'closed' %}
+{% if writable and request.membership.role != 'viewer' and item.status != 'closed' and item.status != 'cancelled' and item.status != 'implemented' %}
 <details{% if edit_form.is_bound %} open{% endif %}><summary>Edit request</summary><form method="post">{% csrf_token %}{{ edit_form.as_p }}<button name="action" value="edit">Save changes</button></form></details>
+<p class="muted">Changing the request or project returns it to Open for fresh analysis. Previous analysis remains in history.</p>
 {% endif %}</section>
+<section class="panel"><h2>Implementation analysis</h2>
+{% if item.analysis %}<p>Project scope: {{ item.analysis.project_kind }}</p><h3>Specification</h3><pre class="preserve-lines">{{ item.analysis.specification }}</pre><h3>New routes / interoperability</h3><pre class="preserve-lines">{{ item.analysis.new_interfaces }}</pre><h3>Changed existing interfaces</h3><pre class="preserve-lines">{{ item.analysis.changed_interfaces }}</pre><h3>Breaking changes / migration</h3><pre class="preserve-lines">{{ item.analysis.breaking_changes }}</pre>
+{% else %}<p>No analysis saved. Assign a project and run /analyse-requests from its checkout.</p>{% endif %}
+{% if writable and request.membership.role != 'viewer' %}{% if item.status == 'analyzed' or item.status == 'specified' %}<details{% if analysis_form.is_bound %} open{% endif %}><summary>Edit analysis</summary><p>Save edits before accepting. Editing a Specified analysis requires acceptance again.</p><form method="post">{% csrf_token %}{{ analysis_form.as_p }}<button name="action" value="edit_analysis">Save analysis</button></form></details>{% endif %}{% endif %}
+</section>
 <section class="panel"><h2>History</h2>
 {% for activity in activities %}<article><h3>{{ activity.get_action_display }} · Revision {{ activity.revision }}</h3><p class="muted">{{ activity.actor }} · {{ activity.created_at }}</p><p>{% if activity.previous_status and activity.previous_status != activity.status %}{{ activity.previous_status|title }} → {% endif %}{{ activity.get_status_display }} · {{ activity.get_kind_display }}</p><details><summary>Description at this revision</summary><p class="preserve-lines request-description">{{ activity.description }}</p></details></article>{% endfor %}
+{% for activity in activities %}{% if activity.analysis %}<details><summary>Analysis at revision {{ activity.revision }}</summary><pre>{{ activity.analysis.specification }}</pre><h4>New interfaces</h4><pre>{{ activity.analysis.new_interfaces }}</pre><h4>Changed interfaces</h4><pre>{{ activity.analysis.changed_interfaces }}</pre><h4>Breaking changes</h4><pre>{{ activity.analysis.breaking_changes }}</pre></details>{% endif %}{% endfor %}
 {% include 'pagination.html' with rows=activities %}
 </section>
 {% endblock %}

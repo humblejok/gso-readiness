@@ -42,6 +42,10 @@ If your configured **Sonar MCP** tools are enabled in VS Code chat, `/implement-
 
 Failures keep the finding open and queued with a reason when the Hub claim is still valid. Existing feature branches block rather than being overwritten. Cancellation, edited proposals and newer imported reviews invalidate stale workers. Worktrees/branches are retained for inspection; uncertain Hub writes retry the identical saved completion. See [recovery, permissions and API details](docs/finding_implementation_workflow.md).
 
+### Analyze bug and feature requests
+
+For request specification work, see [the separate `/analyse-requests` workflow](docs/request_analysis_workflow.md). It uses the selected model to analyze Open bug/feature requests, asks clarifying questions, inventories new/changed/breaking interfaces, and saves specifications as Analyzed for human acceptance. Update the Hub (migration **0009**), assign requests to a project, and grant **requests:read** plus **requests:analyse**. No code, branch or PR is created by analysis.
+
 ### Azure DevOps Server and Services
 
 Update the `.github` kit in the reviewed project and deploy/restart the updated Hub. This adapter adds no database migration beyond the existing implementation migration. Git still handles branches/commits/pushes with your configured credentials; only PR operations use the hosting API. The Hub does not receive Azure credentials.
