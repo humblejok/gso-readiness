@@ -89,6 +89,24 @@ Standalone revalidation body: `{ "revision": 3, "report": <targeted-envelope> }`
 
 Responses: `200` success/replay, `201` new claim, `400` invalid evidence/body, `401` invalid token, `403` insufficient scope/workspace entitlement, `404` absent/inaccessible item, `409` changed baseline/revision, active competing claim, cancellation/expiry or conflicting replay, `429` rate limit. Never retry a `409` by just substituting a newer revision.
 
+## Agent availability and recovery
+
+`/implement-findings` uses one delegation level: **Finding Implementation Manager → Targeted Finding Verifier**. The implementation manager runs `revalidate_finding.py prepare`, sends the source-bound request to the verifier, serializes only the verifier's returned assessment, and runs `revalidate_finding.py build`. It does this once for provisional source and again for the clean committed source, with a fresh request and verifier call. Sonar cleanup finishes before the provisional check. The final envelope must resolve the finding and match the actual commit before delivery. The Python helper does not need access to VS Code's agent registry.
+
+Standalone `/revalidate-finding` keeps **Finding Revalidation Manager → Targeted Finding Verifier**, also one level. The leaf verifier has only read/search/execute tools and no allowed subagents. Neither entry point needs a subagent to launch another subagent.
+
+Before acquiring new implementation claims, the implementation manager makes a real, direct `mode=readiness` call. The leaf returns a readiness acknowledgement without source inspection, commands or network operations. This only proves the invocation succeeded at that moment; it is not correction evidence or a promise that later tests will work. Missing/denied/malformed readiness stops new claims and branch creation. If the queue is empty, the check is unnecessary. A new/resumed session repeats readiness before further implementation work; pending completion recovery still uses the saved immutable payload.
+
+If a verifier invocation fails, reporting must name the agent, phase (readiness/provisional/committed), whether the call was attempted, and the sanitized actual tool error. Do not infer capacity, permissions or configuration causes from a generic denial. A verifier returning `not_reproduced` is distinct from an agent invocation that never ran; a denied call cannot produce a replacement finding result. Reading an agent file or receiving a coordinator's narrative report does not prove independent verification occurred.
+
+To use the updated workflow:
+
+1. Update the reviewed project's `.github` kit, preserving local customizations. Ensure the implementation manager's `agents` list names `Targeted Finding Verifier` directly and the updated leaf is present. Commit intended kit/settings changes before a fresh implementation attempt.
+2. Start a fresh VS Code chat in the intended repository, using Finding Implementation Manager, with the agent/runSubagent tool enabled. No nested-subagent setting is needed; do not add the obsolete `chat.customAgentInSubagent.enabled` key. If the direct call is denied, inspect chat customization diagnostics for agent loading errors and the actual tool call error. The workflow change removes nesting, not host permissions or discovery requirements.
+3. For an existing failed attempt, stop the old worker and inspect its state. The normal `implement_findings.py fail` path releases a valid active claim and keeps the finding open/queued with a reason. A `completion_pending` attempt instead needs `sync`; an uncertain Azure PR submission requires inspection/recovery, not replacement with a failure. Hub **Cancel implementation** cancels the claim and unqueues the item if cancellation is intended. Requeueing does not remove an existing feature branch.
+
+Do not delete state, locks, worktrees or branches, overwrite a remote branch, or relabel old evidence to make a retry pass. Existing branch collisions remain blockers. Availability checks and independent invocation are Copilot workflow instructions, not a machine-enforced authorization/signature mechanism. The kit tests exercise the delegation contract and source-bound packaging, but live VS Code/Copilot authorization must be checked in the target environment.
+
 ## Targeted envelope and persistence
 
 The portable validator is `targeted_contract.py`, identically vendored in kit and Hub. Its exact top-level fields are `schema_version: "1.0"`, `kind: "finding-revalidation"`, a UUID `run_id`, `repository_external_id`, `baseline`, `source`, `result`, and `not_revalidated`.

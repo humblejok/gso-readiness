@@ -101,6 +101,44 @@ class TargetedTests(unittest.TestCase):
             with self.assertRaises(TargetedError):
                 validate_targeted(candidate)
 
+    def test_coordinator_can_package_provisional_then_fresh_committed_result(self):
+        # Fixture verifier output stands in for two independent calls; no live agent is simulated.
+        original_baseline = self.baseline.read_bytes()
+        git(self.root, "switch", "-c", "feature/" + self.args.finding)
+        (self.root / "app.py").write_text("safe = True\n# verified correction\n")
+        self.args.allow_dirty = True
+        provisional_args = self.prepared()
+        provisional_result = targeted.build(provisional_args)
+        provisional = json.loads(Path(provisional_result["envelope"]).read_text())
+        self.assertTrue(provisional["source"]["dirty"])
+        git(self.root, "add", "app.py")
+        git(self.root, "commit", "-m", "Correction")
+        with self.assertRaisesRegex(TargetedError, "Source changed"):
+            targeted.build(provisional_args)
+        self.args.allow_dirty = False
+        committed_args = self.prepared()
+        committed_result = targeted.build(committed_args)
+        committed = json.loads(Path(committed_result["envelope"]).read_text())
+        self.assertEqual(committed_result["outcome"], "resolved")
+        self.assertFalse(committed["source"]["dirty"])
+        self.assertEqual(committed["source"]["commit_sha"], git(self.root, "rev-parse", "HEAD"))
+        self.assertNotEqual(committed["run_id"], provisional["run_id"])
+        self.assertEqual(committed["baseline"], provisional["baseline"])
+        self.assertEqual(committed["not_revalidated"], provisional["not_revalidated"])
+        self.assertEqual(self.baseline.read_bytes(), original_baseline)
+
+    def test_missing_verifier_output_or_readiness_cannot_build_envelope(self):
+        prepared = targeted.prepare(self.args)
+        args = argparse.Namespace(request=prepared["request"], verification=None)
+        with self.assertRaises(OSError):
+            targeted.build(args)
+        Path(prepared["verification"]).write_text(json.dumps({
+            "status": "ready", "agent": "Targeted Finding Verifier",
+        }))
+        with self.assertRaises(TargetedError):
+            targeted.build(args)
+        self.assertFalse(Path(prepared["request"]).with_name("revalidation-envelope.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
