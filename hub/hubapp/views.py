@@ -40,6 +40,7 @@ from .models import (
     Organization,
     OutboxEvent,
     Repository,
+    RequestImplementation,
     ReviewImport,
     User,
 )
@@ -790,6 +791,23 @@ def export(request, organization_id):
                 yield ("" if first else ",") + canonical(record)
                 first = False
             for name, model, fields in (
+                (
+                    "request_implementations",
+                    RequestImplementation,
+                    (
+                        "id",
+                        "change_request_id",
+                        "request_id",
+                        "actor",
+                        "revision",
+                        "specification",
+                        "created_at",
+                        "expires_at",
+                        "status",
+                        "comment",
+                        "data",
+                    ),
+                ),
                 (
                     "change_requests",
                     ChangeRequest,

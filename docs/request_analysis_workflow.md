@@ -27,7 +27,7 @@ Every analysis inventories **new interfaces**, **changed existing interfaces** a
 - Creation → **Open**.
 - Completed analysis saved by the command → **Analyzed**.
 - A workspace owner/admin/reviewer reviews/edits it, then clicks **Accept analysis** → **Specified**.
-- **Implemented → Closed** remain manual tracking stages; analysis does not execute them.
+- **Specified → Implemented** can be performed by [`/implement-requests`](request_implementation_workflow.md) using the accepted specification, independent verification and a PR, or tracked manually in the Hub. Analysis does not execute implementation. **Implemented → Closed** remains a human tracking action; Implemented does not mean merged or deployed.
 - The creator can cancel Open/Analyzed/Specified requests → **Cancelled**, but not Implemented/Closed.
 - Editing the request/project resets it to Open for fresh analysis. Editing a Specified analysis returns it to Analyzed for renewed acceptance. Previous versions remain in history. Closed/Cancelled are read-only.
 

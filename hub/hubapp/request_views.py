@@ -8,7 +8,7 @@ from django.shortcuts import redirect
 from django.views.decorators.http import require_http_methods
 
 from . import change_requests, forms
-from .models import ChangeRequest, ChangeRequestActivity
+from .models import ChangeRequest, ChangeRequestActivity, RequestImplementation
 from .services import require_writes
 from .views import get_object_or_404, page, role_required, workspace_url
 
@@ -116,6 +116,9 @@ def detail(request, organization_id, pk):
         edit_form=edit_form,
         transition_form=transition_form,
         analysis_form=analysis_form,
+        implementations=RequestImplementation.objects.filter(change_request=item).order_by(
+            "-created_at"
+        )[:25],
         can_cancel=can_cancel,
         activities=Paginator(
             ChangeRequestActivity.objects.filter(change_request=item).order_by("-revision"), 20

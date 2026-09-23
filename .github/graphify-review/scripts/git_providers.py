@@ -5,7 +5,12 @@ import uuid
 from pathlib import Path
 
 from azure_devops import AzureError, request
-from git_host_contract import HostError, pull_request_url, repository_host, validate_pr_url
+from git_host_contract import (
+    HostError,
+    pull_request_url,
+    repository_host,
+    validate_pr_url,
+)
 from review_settings import load_settings
 
 
@@ -27,6 +32,12 @@ def provider_for(root, host, run):
     raise HostError("Unsupported Git hosting provider.")
 
 
+def verification_note(state):
+    if state.get("kind") == "request":
+        return "\n\nIndependent verification passed against the user-approved specification for " + state["item"]["display_id"] + ". No finding statuses or whole-project grades were reassessed. Not merged or deployed.\n"
+    return "\n\nTargeted revalidation passed for " + state["item"]["display_id"] + ". Other findings and whole-project grades were not reassessed. Not merged or deployed.\n"
+
+
 class GitHub:
     def __init__(self, root, host, run):
         self.root, self.host, self.run = Path(root), host, run
@@ -45,7 +56,7 @@ class GitHub:
             body_path = path.parent / "pr-body.txt"
             if not body_path.exists():
                 with body_path.open("x", encoding="utf-8") as handle:
-                    handle.write(text + "\n\nTargeted revalidation passed for " + state["item"]["display_id"] + ". Other findings and whole-project grades were not reassessed.\n")
+                    handle.write(text + verification_note(state))
             url = self.run(tree, "gh", "pr", "create", "--repo", repo, "--head", state["branch"], "--base", state["base_branch"], "--title", "Implement " + state["item"]["display_id"], "--body-file", str(body_path))
         return validate_pr_url(url, self.host["clone_url"])
 
@@ -105,7 +116,7 @@ class AzureDevOps:
         pr = request(self.root, self.host, "POST", "/pullrequests", data={
             "sourceRefName": "refs/heads/" + state["branch"], "targetRefName": "refs/heads/" + state["base_branch"],
             "title": "Implement " + state["item"]["display_id"],
-            "description": text + "\n\nTargeted revalidation passed. Other findings and whole-project grades were not reassessed. Not merged or deployed."})
+            "description": text + verification_note(state)})
         return self.validate(pr, state)
 
     def verify(self, state):

@@ -15,7 +15,7 @@
       "workspaceToken": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Shown-once workspace token: UUID.secret; scopes reviews:write, findings:read, findings:implement, requests:read, requests:analyse. Implementing requires both finding scopes; request analysis requires both request scopes and cannot accept/cancel requests. Personal tech-lead tokens require X-Workspace-ID for workspace endpoints."
+        "description": "Shown-once workspace token: UUID.secret; scopes reviews:write, findings:read, findings:implement, requests:read, requests:analyse, requests:implement. Finding implementation requires both finding scopes; request analysis requires requests:read and requests:analyse; request implementation requires requests:read and requests:implement. Tokens cannot accept/cancel requests. Personal tech-lead tokens require X-Workspace-ID for workspace endpoints."
       }
     },
     "schemas": {
@@ -180,6 +180,34 @@
           "properties": {"revision": {"type": "integer", "minimum": 1}, "repository_external_id": {"type": "string", "minLength": 1}, "submission_id": {"type": "string", "format": "uuid"}, "analysis": {"$ref": "#/components/schemas/RequestAnalysis"}}
         }}}},
         "responses": {"200": {"description": "Analyzed request or identical replay"}, "400": {"description": "Invalid analysis"}, "403": {"description": "Scope or workspace write restriction"}, "404": {"description": "Not found or inaccessible"}, "409": {"description": "Revision/project/state changed or conflicting replay"}, "429": {"description": "Rate limit"}}
+      }
+    },
+    "/api/v1/requests/{id}/implementation": {
+      "parameters": [{"in": "path", "name": "id", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "get": {
+        "operationId": "getRequestImplementationContext",
+        "description": "Requires requests:read. Returns current request UUID, revision, project, kind, description, analysis, status, display_id (REQ-UUID), specification_digest and clone_url. Claim additionally enforces Specified status.",
+        "responses": {"200": {"description": "Approved-specification context"}, "400": {"description": "Missing complete specification or active project"}, "403": {"description": "Insufficient scope"}, "404": {"description": "Absent or inaccessible"}}
+      },
+      "post": {
+        "operationId": "implementRequest",
+        "description": "Requires requests:read and requests:implement. Four-hour exclusive claim of a human-accepted Specified revision. Request edits/cancellation invalidate claims. Success records evidence/PR and marks Implemented, not Closed or merged; failure keeps Specified. Exact completed retries are idempotent. Maximum completion size 256 KiB; 60 requests/minute/workspace.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "oneOf": [
+            {"type": "object", "additionalProperties": false, "required": ["action", "revision", "request_id", "repository_external_id"], "properties": {
+              "action": {"const": "claim"}, "revision": {"type": "integer", "minimum": 1}, "request_id": {"type": "string", "format": "uuid"}, "repository_external_id": {"type": "string", "minLength": 1, "maxLength": 500}
+            }},
+            {"type": "object", "additionalProperties": false, "required": ["action", "attempt_id", "repository_external_id", "completion"], "properties": {
+              "action": {"const": "complete"}, "attempt_id": {"type": "string", "format": "uuid"}, "repository_external_id": {"type": "string", "minLength": 1, "maxLength": 500},
+              "completion": {"type": "object", "additionalProperties": false, "required": ["outcome", "comment", "report", "pull_request", "commit_sha", "base_branch"], "properties": {
+                "outcome": {"enum": ["succeeded", "failed"]}, "comment": {"type": "string", "minLength": 1, "maxLength": 8000},
+                "report": {"type": ["object", "null"], "description": "Success: request-verification schema_version 1.0, run_id UUID, repository_external_id, baseline {request_id UUID, revision, specification_digest sha256}, source {commit_sha, branch, snapshot_hash sha256, dirty false}, result {status satisfied, rationale, reviewer, evidence [{path,fact}], checks [{command,status,summary}], acceptance [{criterion,status,evidence}]}. Every check/criterion must pass; evidence/checks/acceptance each contain 1-100 bounded entries. Frozen digest/revision and exact feature/REQ-UUID commit must match claim. Failure: null. See docs/request_implementation_workflow.md and portable request_contract.py for complete validation."},
+                "pull_request": {"type": "string", "maxLength": 1000}, "commit_sha": {"type": "string"}, "base_branch": {"type": "string"}
+              }}
+            }}
+          ]
+        }}}},
+        "responses": {"200": {"description": "Existing claim context or completion {attempt_id, request_id, status, comment, result {status,revision}}"}, "201": {"description": "New claim context with attempt_id and expires_at"}, "400": {"description": "Invalid evidence/input"}, "403": {"description": "Scope or workspace write restriction"}, "404": {"description": "Inaccessible request/claim/project"}, "409": {"description": "Stale/conflicting/cancelled/expired claim or specification"}, "429": {"description": "Rate limit"}}
       }
     },
     "/api/v1/review-imports": {

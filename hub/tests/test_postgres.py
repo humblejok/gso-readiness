@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from django.db import DatabaseError, close_old_connections, connection, transaction
 
-from hubapp import change_requests, finding_work
+from hubapp import change_requests, finding_work, request_work
 from hubapp.imports import import_review
 from hubapp.models import (
     ChangeRequest,
@@ -12,6 +12,7 @@ from hubapp.models import (
     Finding,
     FindingActivity,
     Repository,
+    RequestImplementation,
     ReviewImport,
 )
 from hubapp.services import create_workspace
@@ -201,3 +202,70 @@ def test_postgres_concurrent_request_update_has_one_winner(org, owner):
     with tenant_scope(org.id):
         assert ChangeRequestActivity.objects.count() == 2
         assert ChangeRequest.objects.get(pk=item.pk).revision == 2
+
+
+def test_postgres_request_implementation_isolation_and_concurrent_claim(org, owner):
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    other = create_workspace(owner, "Implementation isolation")
+    with tenant_scope(org.id):
+        Repository.objects.create(external_id="repo:orders", name="Orders")
+        item = change_requests.create(
+            kind="feature",
+            description="Export orders",
+            actor=owner.username,
+            repository_external_id="repo:orders",
+        )
+        item = change_requests.submit_analysis(
+            item.pk,
+            revision=1,
+            actor="analyzer",
+            repository_external_id="repo:orders",
+            submission_id=str(uuid.uuid4()),
+            analysis={
+                "project_kind": "backend",
+                "specification": "Authorized exports",
+                "new_interfaces": "POST /exports",
+                "changed_interfaces": "None",
+                "breaking_changes": "None",
+            },
+        )
+        item = change_requests.update(item.pk, revision=2, actor=owner.username, action="accept")
+
+    def run():
+        close_old_connections()
+        try:
+            with tenant_scope(org.id):
+                try:
+                    request_work.claim(item.pk, 3, uuid.uuid4(), "worker", "repo:orders")
+                    return "claimed"
+                except change_requests.RequestConflict:
+                    return "conflict"
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert sorted(executor.map(lambda _: run(), range(2))) == ["claimed", "conflict"]
+    with tenant_scope(org.id):
+        attempt = RequestImplementation.objects.get()
+    with tenant_scope(other.id):
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM hubapp_requestimplementation")
+            assert cursor.fetchone()[0] == 0
+        with pytest.raises(DatabaseError), transaction.atomic():
+            RequestImplementation.all_objects.create(
+                organization=other,
+                change_request=item,
+                request_id=uuid.uuid4(),
+                actor="intruder",
+                revision=3,
+                specification={},
+                expires_at=timezone.now() + timedelta(hours=1),
+            )
+    with tenant_scope(org.id), pytest.raises(DatabaseError), transaction.atomic():
+        RequestImplementation.all_objects.filter(pk=attempt.pk).update(organization=other)
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT COUNT(*) FROM hubapp_requestimplementation")
+        assert cursor.fetchone()[0] == 0

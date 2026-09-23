@@ -21,6 +21,7 @@ from .models import (
     Membership,
     Organization,
     RateBucket,
+    RequestImplementation,
     ReviewImport,
     Subscription,
 )
@@ -77,7 +78,8 @@ def usage():
         "storage_bytes": (ReviewImport.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0)
         + (FindingActivity.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0)
         + (ChangeRequest.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0)
-        + (ChangeRequestActivity.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0),
+        + (ChangeRequestActivity.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0)
+        + (RequestImplementation.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0),
     }
 
 
@@ -90,6 +92,7 @@ def issue_token(name, scopes, repository_external_id="", days=90):
             "findings:implement",
             "requests:read",
             "requests:analyse",
+            "requests:implement",
         }
         or not scopes
     ):

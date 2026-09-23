@@ -9,8 +9,8 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from export_review import KIT_ROOT, read_json, write_new_json
 from azure_devops import AzureError
+from export_review import KIT_ROOT, read_json, write_new_json
 from git_host_contract import HostError, repository_host
 from git_providers import describe, provider_for
 from hub_findings import context, request_json
@@ -143,6 +143,9 @@ def plan(args):
 
 def api(state, data):
     check_credential_context(state)
+    if state.get("kind") == "request":
+        return request_json(Path(state["root"]), "POST", f"/api/v1/requests/{uuid.UUID(state['item']['id'])}/implementation",
+                            {**data, "repository_external_id": state["item"]["repository_external_id"]}, state["hub_url"])
     return request_json(Path(state["root"]), "POST", f"/api/v1/findings/{uuid.UUID(state['item']['finding_id'])}/implementation", data, state["hub_url"])
 
 
@@ -155,7 +158,8 @@ def start(path, state):
     if state["stage"] == "planned":
         state["stage"] = "claimed"
     save(path, state)
-    if claimed["baseline_observation_id"] != state["item"]["baseline_observation_id"]:
+    baseline_key = "specification_digest" if state.get("kind") == "request" else "baseline_observation_id"
+    if claimed[baseline_key] != state["item"][baseline_key]:
         raise WorkError("Baseline changed before the claim. Do not implement the old proposal.")
     bound_provider(state).preflight()
     save(path, state)
@@ -176,12 +180,19 @@ def start(path, state):
             run(tree, "git", "push", "--force-with-lease=refs/heads/" + state["branch"] + ":", state["remote"], "HEAD:refs/heads/" + state["branch"])
         state["stage"] = "started"
         save(path, state)
+    is_request = state.get("kind") == "request"
     return {"state": str(path), "stage": state["stage"], "worktree": str(tree),
-            "baseline": str(path.parent / "baseline-review.json"), "finding_id": state["item"]["display_id"],
-            "remediation": claimed["remediation"], "branch": state["branch"], "base_branch": state["base_branch"]}
+            "baseline": str(path.parent / ("baseline-request.json" if is_request else "baseline-review.json")),
+            "display_id": state["item"]["display_id"],
+            **({"request_id": state["item"]["id"]} if is_request else {"finding_id": state["item"]["display_id"]}),
+            "remediation": claimed["analysis"] if is_request else claimed["remediation"],
+            "branch": state["branch"], "base_branch": state["base_branch"]}
 
 
 def verify_source(state, report_path, clean=False):
+    if state.get("kind") == "request":
+        from implement_requests import verify_source as verify_request
+        return verify_request(state, report_path, clean)
     report, _ = read_json(Path(report_path))
     validate_targeted(report)
     tree = Path(state["worktree"])
@@ -283,11 +294,14 @@ def deliver(path, state, args):
     return sync(path, state)
 
 
-def main(argv=None):
+def main(argv=None, *, kind="finding"):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("plan", "start", "commit", "deliver", "fail", "sync"))
     parser.add_argument("--repository", default=".")
-    parser.add_argument("--finding", help="Hub finding UUID (resolve the short ID through the queue)")
+    if kind == "request":
+        parser.add_argument("--request", help="Hub request UUID displayed on its details page")
+    else:
+        parser.add_argument("--finding", help="Hub finding UUID (resolve the short ID through the queue)")
     parser.add_argument("--remote", default="origin")
     parser.add_argument("--base-branch")
     parser.add_argument("--base-commit")
@@ -300,7 +314,11 @@ def main(argv=None):
     lock_owned = False
     try:
         if args.action == "plan":
-            result = plan(args)
+            if kind == "request":
+                from implement_requests import plan as plan_request
+                result = plan_request(args)
+            else:
+                result = plan(args)
         else:
             path = Path(args.state).resolve()
             lock = path.parent / ".worker.lock"
@@ -308,6 +326,8 @@ def main(argv=None):
                 pass
             lock_owned = True
             state, _ = read_json(path)
+            if state.get("kind", "finding") != kind:
+                raise WorkError("State belongs to another workflow. Use its original implementation command.")
             if Path(state["root"]) != Path(args.repository).resolve():
                 raise WorkError("State belongs to a different checkout. Use its original --repository.")
             if args.action == "start":
@@ -328,7 +348,7 @@ def main(argv=None):
                 result = sync(path, state)
         print(json.dumps(result, ensure_ascii=True))
         return 0
-    except Exception as exc:  # Sanitized tool/credential boundary; preserve all source and branches.
+    except Exception as exc:  # noqa: BLE001 - Sanitized tool/credential boundary; preserve source and branches.
         message = str(exc) if isinstance(exc, (WorkError, PublishError, HostError, AzureError)) else "Implementation operation blocked. Inspect saved state and inputs; no destructive cleanup was attempted."
         print(json.dumps({"status": "blocked", "state": args.state, "message": message}), file=sys.stderr)
         return 2

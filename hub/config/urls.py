@@ -69,6 +69,7 @@ urlpatterns = [
     path("api/v1/findings", api.FindingsAPI.as_view()),
     path("api/v1/requests", request_api.RequestsAPI.as_view()),
     path("api/v1/requests/<uuid:pk>/analysis", request_api.RequestAnalysisAPI.as_view()),
+    path("api/v1/requests/<uuid:pk>/implementation", request_api.RequestImplementationAPI.as_view()),
     path("api/v1/findings/<uuid:pk>", api.FindingDetailAPI.as_view()),
     path("api/v1/findings/<uuid:pk>/implementation", api.FindingWorkAPI.as_view()),
     path("api/v1/findings/<uuid:pk>/revalidation", api.FindingRevalidationAPI.as_view()),

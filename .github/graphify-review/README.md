@@ -12,6 +12,10 @@ Run `/analyse-requests` or `/analyse-requests requests=<request-UUID>,<request-U
 
 Requires the updated Hub with migration **0009**, an assigned Project on each request, and token scopes **requests:read** and **requests:analyse**. Personal tech-lead tokens also need the saved workspace ID. Existing credentials/proxy/CA setup is reused; never paste secrets in chat. Existing unassigned requests are not included. UUIDs are shown on request details. The helper `scripts/hub_requests.py` saves source-bound state/analysis/submission artifacts under `output/request-analyses/`. Stale revisions/cancellation/source changes block submission; uncertain writes must retry the identical saved payload. No analysis token can accept or cancel a request.
 
+### Implement accepted requests
+
+Run `/implement-requests [requests=<request-UUID>,<request-UUID>] [remote=origin]` after human acceptance. Requires Hub migration **0010**, **requests:read** + **requests:implement**, and a clean authenticated checkout. Request Implementation Manager directly calls Request Implementation Verifier (readiness, provisional and committed phases), reuses the findings workflow's native build/Maven, optional Sonar MCP and GitHub/Azure PR safeguards, and implements the frozen approved specification. No nested manager is used. Each `feature/REQ-<UUID>` branch starts at the original base commit; only verified PR creation and Hub synchronization mark the request Implemented. Failure keeps it Specified, preserving work and recording a reason. See [request implementation and recovery](../../docs/request_implementation_workflow.md). State and evidence stay under `output/request-implementations/` and `output/request-verifications/`; they are not finding-import envelopes.
+
 Start with [`policy.yaml`](policy.yaml), then follow the manager lifecycle in `../agents/review-manager.agent.md`. The root repository `README.md` documents commands and output contracts.
 
 Important authorities:

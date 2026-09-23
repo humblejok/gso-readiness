@@ -35,11 +35,11 @@ def identifiers(value):
         ) from exc
 
 
-def checked(item, repository, selected=()):
+def checked(item, repository, selected=(), *, status="open"):
     if (
         not isinstance(item, dict)
         or item.get("repository_external_id") != repository
-        or item.get("status") != "open"
+        or item.get("status") != status
         or type(item.get("revision")) is not int
         or item["revision"] < 1
         or not isinstance(item.get("description"), str)
@@ -47,7 +47,7 @@ def checked(item, repository, selected=()):
         or item.get("kind") not in {"bug", "feature"}
     ):
         raise PublishError(
-            "Hub returned a request outside the expected open project queue."
+            "Hub returned a request outside the expected project/status queue."
         )
     identifier = str(uuid.UUID(item.get("id", "")))
     if item["id"] != identifier or (selected and identifier not in selected):
@@ -55,14 +55,16 @@ def checked(item, repository, selected=()):
     return item
 
 
-def queue(root, selected=()):
+def queue(root, selected=(), *, status="open"):
+    if status not in {"open", "specified"}:
+        raise PublishError("Only Open analysis or Specified implementation queues are supported.")
     context = binding(root)
     items, seen = [], set()
     for page in range(1, 101):
         query = urllib.parse.urlencode(
             {
                 "repository_external_id": context["repository_external_id"],
-                "status": "open",
+                "status": status,
                 "ids": ",".join(selected),
                 "page": page,
             }
@@ -77,7 +79,7 @@ def queue(root, selected=()):
         ):
             raise PublishError("Invalid Hub request queue response.")
         for item in response["results"]:
-            checked(item, context["repository_external_id"], selected)
+            checked(item, context["repository_external_id"], selected, status=status)
             if item["id"] in seen:
                 raise PublishError(
                     "Request queue changed during pagination; fetch it again."
@@ -90,7 +92,7 @@ def queue(root, selected=()):
         raise PublishError(
             "Queue exceeds the page limit; use a smaller explicit ID filter."
         )
-    return {**context, "items": items, "not_open_ids": sorted(set(selected) - seen)}
+    return {**context, "items": items, "not_open_ids" if status == "open" else "not_specified_ids": sorted(set(selected) - seen)}
 
 
 def prepare(root, identifier):
@@ -176,6 +178,7 @@ def main(argv=None):
     parser.add_argument("action", choices=("queue", "prepare", "submit"))
     parser.add_argument("--repository", default=".")
     parser.add_argument("--ids", default="")
+    parser.add_argument("--status", choices=("open", "specified"), default="open", help="Queue status only")
     parser.add_argument("--request")
     parser.add_argument("--state")
     parser.add_argument("--analysis")
@@ -183,7 +186,7 @@ def main(argv=None):
     try:
         root = Path(args.repository).resolve()
         if args.action == "queue":
-            result = queue(root, identifiers(args.ids))
+            result = queue(root, identifiers(args.ids), status=args.status)
         elif args.action == "prepare" and args.request:
             result = prepare(root, args.request)
         elif args.action == "submit" and args.state and args.analysis:

@@ -9,10 +9,12 @@ from rest_framework.exceptions import PermissionDenied, Throttled
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import change_requests
+from . import change_requests, request_work
 from .api import paginated, permitted, repository_filter
-from .models import ChangeRequest, Repository
+from .git_host_contract import HostError
+from .models import ChangeRequest, Repository, RequestImplementation
 from .services import rate_limit
+from .targeted_contract import TargetedError
 
 
 def request_data(item):
@@ -93,3 +95,79 @@ class RequestAnalysisAPI(APIView):
         except (ValidationError, ValueError, TypeError, AttributeError):
             return Response({"error": "Invalid request analysis."}, status=400)
         return Response(request_data(result))
+
+
+class RequestImplementationAPI(APIView):
+    def get(self, request, pk):
+        permitted(request, "requests:read")
+        item = get_object_or_404(visible(request), pk=pk)
+        try:
+            return Response(request_work.context(item))
+        except (TargetedError, Repository.DoesNotExist):
+            return Response(
+                {
+                    "error": "Request requires an active project and complete accepted specification."
+                },
+                status=400,
+            )
+
+    def post(self, request, pk):
+        permitted(request, "requests:read")
+        permitted(request, "requests:implement")
+        item = get_object_or_404(visible(request), pk=pk)
+        if not rate_limit("request-implementation:" + str(request.auth.organization_id), 60):
+            raise Throttled()
+        try:
+            data = request.data
+            if (
+                not isinstance(data, dict)
+                or data.get("repository_external_id") != item.repository_external_id
+            ):
+                raise change_requests.RequestConflict("Request project changed.")
+            if (
+                set(data) == {"action", "revision", "request_id", "repository_external_id"}
+                and data["action"] == "claim"
+            ):
+                attempt, current, created = request_work.claim(
+                    item.pk,
+                    data["revision"],
+                    data["request_id"],
+                    request.auth.pk,
+                    data["repository_external_id"],
+                )
+                return Response(
+                    {**current, "attempt_id": str(attempt.pk), "expires_at": attempt.expires_at},
+                    status=201 if created else 200,
+                )
+            if (
+                set(data) == {"action", "attempt_id", "completion", "repository_external_id"}
+                and data["action"] == "complete"
+            ):
+                return Response(
+                    request_work.complete(
+                        item.pk,
+                        data["attempt_id"],
+                        data["completion"],
+                        request.auth.pk,
+                        data["repository_external_id"],
+                    )
+                )
+            raise ValidationError("Unknown request implementation action.")
+        except change_requests.RequestConflict as error:
+            return Response({"errors": error.messages}, status=409)
+        except DjangoPermissionDenied as error:
+            raise PermissionDenied(str(error)) from error
+        except (RequestImplementation.DoesNotExist, Repository.DoesNotExist):
+            return Response(
+                {"error": "Implementation claim or active project not found."}, status=404
+            )
+        except (
+            ValidationError,
+            TargetedError,
+            HostError,
+            ValueError,
+            TypeError,
+            KeyError,
+            AttributeError,
+        ):
+            return Response({"error": "Invalid request implementation evidence."}, status=400)

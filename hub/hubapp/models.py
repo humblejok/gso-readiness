@@ -128,6 +128,7 @@ class UserApiToken(models.Model):
         ("findings:implement", "Claim and complete queued implementations"),
         ("requests:read", "Read project requests"),
         ("requests:analyse", "Submit analysis for open requests (not accept it)"),
+        ("requests:implement", "Claim and implement user-specified requests"),
     ]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
@@ -324,6 +325,41 @@ class ChangeRequestActivity(TenantRecord):
             models.UniqueConstraint(
                 fields=["change_request", "revision"], name="request_revision_unique"
             )
+        ]
+
+
+class RequestImplementation(TenantRecord):
+    """Frozen approved specification, exclusive lease and immutable completion receipt."""
+
+    change_request = models.ForeignKey(
+        ChangeRequest, on_delete=models.CASCADE, related_name="implementations"
+    )
+    request_id = models.UUIDField()
+    actor = models.CharField(max_length=100)
+    revision = models.PositiveIntegerField()
+    specification = models.JSONField()
+    expires_at = models.DateTimeField()
+    status = models.CharField(
+        max_length=16,
+        default="running",
+        choices=[
+            (s, s.title()) for s in ("running", "succeeded", "failed", "cancelled", "expired")
+        ],
+    )
+    comment = models.TextField(blank=True)
+    data = models.JSONField(default=dict)
+    payload_bytes = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "request_id"], name="request_implementation_identity"
+            ),
+            models.UniqueConstraint(
+                fields=["change_request"],
+                condition=models.Q(status="running"),
+                name="one_running_request_implementation",
+            ),
         ]
 
 

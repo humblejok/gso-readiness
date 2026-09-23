@@ -24,6 +24,7 @@ class Command(BaseCommand):
                 "imports": models.ReviewImport.objects.count(),
                 "findings": models.Finding.objects.count(),
                 "requests": models.ChangeRequest.objects.count(),
+                "request_implementations": models.RequestImplementation.objects.count(),
                 "members": models.Membership.objects.filter(organization=org).count(),
             }
             self.stdout.write(f"Workspace {org.id}: {counts}")
@@ -43,6 +44,7 @@ class Command(BaseCommand):
                 raise CommandError("Cancel and reconcile the provider subscription before erasure.")
             # Explicit ordering handles protected Jira relationships. The user's account is retained.
             for model in (
+                models.RequestImplementation,
                 models.ChangeRequestActivity,
                 models.ChangeRequest,
                 models.DeliveryAttempt,

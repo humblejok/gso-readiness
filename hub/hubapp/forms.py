@@ -118,6 +118,7 @@ class TokenForm(forms.Form):
             ("findings:implement", "Claim and complete queued implementations"),
             ("requests:read", "Read project requests"),
             ("requests:analyse", "Submit request analysis (not accept it)"),
+            ("requests:implement", "Claim and implement user-specified requests"),
         ],
         widget=forms.CheckboxSelectMultiple,
     )

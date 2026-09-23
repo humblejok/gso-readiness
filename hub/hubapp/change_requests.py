@@ -142,6 +142,12 @@ def update(
         raise ValidationError("Unknown request action.")
     item.revision += 1
     item.analysis_submission_id, item.analysis_submission_digest = None, ""
+    # Serialize with claim/completion under the workspace lock already held above.
+    from .models import RequestImplementation
+
+    RequestImplementation.objects.filter(change_request=item, status="running").update(
+        status="cancelled"
+    )
     return _record(item, actor, event, previous_status, previous_bytes)
 
 
