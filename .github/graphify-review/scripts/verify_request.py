@@ -7,7 +7,11 @@ import uuid
 from pathlib import Path
 
 from export_review import KIT_ROOT, read_json, write_new_json
-from request_contract import validate_request_report, validate_specification
+from request_contract import (
+    RequestArtifactError,
+    validate_request_report,
+    validate_specification,
+)
 from revalidate_finding import source
 from targeted_contract import TargetedError, digest
 
@@ -50,6 +54,11 @@ def prepare(args):
         "status": "needs_verification",
         "request": str(directory / "request.json"),
         "verification": str(directory / "verification.json"),
+        "verification_instructions": (
+            "Write only the independent verifier object to verification.json: status "
+            "(satisfied|not_satisfied|inconclusive), rationale, reviewer, evidence, checks, "
+            "acceptance. Never write a build receipt or readiness acknowledgement here."
+        ),
     }
 
 
@@ -86,9 +95,16 @@ def build(args):
     else:
         write_new_json(envelope, report)
     return {
+        "artifact_kind": "request-verification-build-result",
         "status": "verified",
         "outcome": verification["status"],
         "envelope": str(envelope),
+        "report_instructions": (
+            "This is a command receipt, not verifier evidence or a report. "
+            "Only outcome=satisfied is eligible to continue. Pass the envelope FILE PATH "
+            "as --report to implement_requests.py commit/deliver; never pass this receipt "
+            "or write it to verification.json. Source and claim checks still apply."
+        ),
     }
 
 
@@ -115,6 +131,11 @@ def main(argv=None):
             json.dumps(
                 {
                     "status": "blocked",
+                    **(
+                        {"error_code": exc.code}
+                        if isinstance(exc, RequestArtifactError)
+                        else {}
+                    ),
                     "message": str(exc)
                     if isinstance(exc, TargetedError)
                     else "Request verification blocked; check inputs and evidence.",

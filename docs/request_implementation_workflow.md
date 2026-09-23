@@ -33,6 +33,23 @@ The shared engine commits only explicitly selected verified files, rejects unexp
 
 ## Recovery
 
+### Verification artifact handoff
+
+`verify_request.py build` prints a command receipt such as:
+
+```json
+{
+  "artifact_kind": "request-verification-build-result",
+  "status": "verified",
+  "outcome": "satisfied",
+  "envelope": "/path/to/request-verification-envelope.json"
+}
+```
+
+This is successful packaging output, **not** the verifier's evidence. The original `verification.json` contains `status=satisfied|not_satisfied|inconclusive` plus `rationale`, `reviewer`, `evidence`, `checks`, and `acceptance`. The generated envelope binds that evidence to the request and source; its verdict is `result.status`. Commit/deliver take the **envelope file path** as `--report`, not the receipt or raw verifier file. Older kits' receipts lack `artifact_kind` but retain the same meaning.
+
+Wrong-artifact inputs now produce `error_code=request_artifact_mismatch` in the local helpers, with instructions identifying the required artifact. They remain rejected; no status conversion, missing-evidence fabrication or automatic path following is performed. A still-active attempt gets one bounded handoff-recovery attempt using genuine verifier evidence/the generated envelope and all normal source/claim checks before being reported as failed. Updating the kit does not reopen an already released claim or change an immutable completion. Preserve that attempt's state, worktree and branch for separate recovery.
+
 Attempt state lives outside the implementation worktree in `.github/graphify-review/output/request-implementations/<attempt>/`; verifier artifacts are under `output/request-verifications/<run>/`. Keep these files. Use the original trusted kit/interpreter and the saved state, not copies modified in the feature worktree.
 
 ```text

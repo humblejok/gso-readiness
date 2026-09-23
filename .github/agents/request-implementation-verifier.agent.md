@@ -16,6 +16,8 @@ Read the native build/test receipt instructions in [Targeted Finding Verifier](t
 
 Return exactly `status`, `rationale`, `reviewer`, `evidence`, `checks`, `acceptance`:
 
+This is the **raw verifier evidence object**, not a `verify_request.py build` receipt or report envelope. Never return `status=verified`, `outcome`, `envelope`, `artifact_kind`, or a top-level `result` wrapper. Those belong to later helper output. If supplied a build receipt as context, request the actual prepared request/worktree/specification instead of copying or relabeling that receipt. Only the manager runs the packaging helper.
+
 - `status`: `satisfied`, `not_satisfied`, or `inconclusive`. Only satisfied can advance implementation. Unknown or unavailable evidence cannot satisfy a request.
 - `rationale`: factual bounded explanation (up to 4,000 characters); `reviewer`: actual verifier identity (up to 200), model only if known.
 - `evidence`: 1–100 `{path: current-repository-relative-path, fact: observed-fact}` entries.

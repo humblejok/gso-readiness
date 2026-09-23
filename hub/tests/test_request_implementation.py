@@ -189,6 +189,9 @@ def test_success_history_export_and_exact_retry(client, org, owner, specified):
         "acceptance",
         "inconclusive",
         "foreign_pr",
+        "build_receipt",
+        "receipt_result",
+        "raw_result",
     ],
 )
 def test_incomplete_or_foreign_evidence_never_implements(client, org, specified, mutation):
@@ -216,6 +219,16 @@ def test_incomplete_or_foreign_evidence_never_implements(client, org, specified,
         report["result"]["status"] = "inconclusive"
     if mutation == "foreign_pr":
         data["pull_request"] = "https://github.com/foreign/repo/pull/1"
+    if mutation == "build_receipt":
+        data["report"] = {
+            "status": "verified",
+            "outcome": "satisfied",
+            "envelope": "do-not-follow.json",
+        }
+    if mutation == "receipt_result":
+        report["result"] = {"status": "verified", "outcome": "satisfied"}
+    if mutation == "raw_result":
+        data["report"] = report["result"]
     assert (
         post(
             client,
@@ -250,14 +263,17 @@ def test_human_change_invalidates_claim(client, org, owner, specified, action):
             specified.pk, revision=3, actor=owner.username, action=action, **extra
         )
         assert RequestImplementation.objects.get(pk=context["attempt_id"]).status == "cancelled"
-    assert post(
-        client,
-        specified,
-        headers,
-        action="complete",
-        attempt_id=context["attempt_id"],
-        completion=data,
-    ).status_code == 409
+    assert (
+        post(
+            client,
+            specified,
+            headers,
+            action="complete",
+            attempt_id=context["attempt_id"],
+            completion=data,
+        ).status_code
+        == 409
+    )
 
 
 def test_claim_exclusivity_expiry_and_failure_release(client, org, specified):

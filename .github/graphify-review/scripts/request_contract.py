@@ -10,6 +10,41 @@ else:
     from targeted_contract import TargetedError, bounded, validate_targeted
 
 
+class RequestArtifactError(TargetedError):
+    """Wrong workflow artifact; never reinterpret a command receipt as evidence."""
+
+    code = "request_artifact_mismatch"
+
+
+def _is_build_receipt(value):
+    return isinstance(value, dict) and (
+        value.get("status") == "verified"
+        or value.get("artifact_kind") == "request-verification-build-result"
+        or "outcome" in value
+    )
+
+
+def check_verifier_artifact(value):
+    """Diagnose artifact confusion only; validate_request_report still checks all evidence."""
+    if _is_build_receipt(value):
+        raise RequestArtifactError(
+            "verification.json requires the independent verifier's evidence object, "
+            "not the verify_request.py build receipt (status=verified, outcome=...). "
+            "Keep the original verifier status/evidence; do not translate the receipt. "
+            "The receipt's envelope path is the --report input for commit/deliver."
+        )
+    if isinstance(value, dict) and value.get("kind") == "request-verification":
+        raise RequestArtifactError(
+            "verification.json requires the original verifier evidence, not a report envelope. "
+            "Pass the generated envelope file path as --report to commit/deliver."
+        )
+    if isinstance(value, dict) and value.get("status") == "ready":
+        raise RequestArtifactError(
+            "Readiness is not verification evidence. Invoke Request Implementation Verifier "
+            "for the actual provisional or committed verification phase."
+        )
+
+
 def display_id(identifier):
     return "REQ-" + str(uuid.UUID(str(identifier)))
 
@@ -81,6 +116,23 @@ def validate_specification(value):
 
 def validate_request_report(report):
     """Reuse strict source/evidence checks via an internal projection, never an exported finding."""
+    if _is_build_receipt(report):
+        raise RequestArtifactError(
+            "--report requires the generated request-verification-envelope.json file, "
+            "not the build command's stdout receipt. Use the file path in envelope; "
+            "do not rename status=verified or outcome to manufacture evidence."
+        )
+    if isinstance(report, dict) and report.get("status") in (
+        "satisfied",
+        "not_satisfied",
+        "inconclusive",
+        "ready",
+    ):
+        raise RequestArtifactError(
+            "--report requires a complete source-bound request-verification envelope, "
+            "not raw verifier evidence or readiness. Run verify_request.py build with "
+            "the original prepared request and actual verifier output first."
+        )
     try:
         if set(report) != {
             "schema_version",
@@ -98,6 +150,7 @@ def validate_request_report(report):
         ):
             raise ValueError
         baseline, result = report["baseline"], report["result"]
+        check_verifier_artifact(result)
         if (
             set(baseline) != {"request_id", "revision", "specification_digest"}
             or type(baseline["revision"]) is not int

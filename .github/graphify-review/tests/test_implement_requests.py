@@ -1,4 +1,5 @@
 import argparse
+import io
 import json
 import sys
 import uuid
@@ -13,7 +14,12 @@ import hub_requests
 import implement_findings as engine
 import implement_requests as requests
 import verify_request
-from request_contract import display_id, specification, validate_request_report
+from request_contract import (
+    RequestArtifactError,
+    display_id,
+    specification,
+    validate_request_report,
+)
 from targeted_contract import TargetedError, digest
 
 
@@ -112,6 +118,13 @@ class RequestImplementationTests(TestCase):
         )
         result = verify_request.build(argparse.Namespace(request=prepared["request"]))
         self.assertEqual(result["outcome"], "satisfied")
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(result["artifact_kind"], "request-verification-build-result")
+        self.assertIn("--report", result["report_instructions"])
+        envelope = json.loads(Path(result["envelope"]).read_text())
+        self.assertEqual(envelope["result"], verification)
+        self.assertNotIn("outcome", envelope["result"])
+        self.assertNotIn("artifact_kind", envelope)
         self.assertEqual(
             verify_request.build(argparse.Namespace(request=prepared["request"])),
             result,
@@ -199,6 +212,112 @@ class RequestImplementationTests(TestCase):
         with self.assertRaises(engine.WorkError):
             requests.verify_source(state, args.report, clean=True)
 
+    def test_build_receipts_envelopes_and_readiness_are_not_verifier_evidence(self):
+        path, state = self.plan()
+        engine.start(path, state)
+        valid_envelope = json.loads(Path(self.report(path, state)).read_text())
+        wrong_artifacts = [
+            {"status": "verified", "outcome": "satisfied"},
+            {
+                "status": "verified",
+                "outcome": "satisfied",
+                "envelope": "do-not-follow.json",
+            },
+            {
+                "artifact_kind": "request-verification-build-result",
+                "status": "verified",
+                "outcome": "satisfied",
+            },
+            {**valid_envelope["result"], "status": "verified", "outcome": "satisfied"},
+            valid_envelope,
+            {"status": "ready", "agent": "Request Implementation Verifier"},
+        ]
+        for wrong in wrong_artifacts:
+            with self.subTest(wrong=wrong):
+                prepared = self.prepare(path, state)
+                evidence_path = Path(prepared["verification"])
+                evidence_path.write_text(json.dumps(wrong))
+                original = evidence_path.read_bytes()
+                with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                    self.assertEqual(
+                        verify_request.main(
+                            ["build", "--request", prepared["request"]]
+                        ),
+                        2,
+                    )
+                error = json.loads(stderr.getvalue())
+                self.assertEqual(error["error_code"], "request_artifact_mismatch")
+                self.assertEqual(evidence_path.read_bytes(), original)
+                self.assertFalse(
+                    (
+                        evidence_path.parent / "request-verification-envelope.json"
+                    ).exists()
+                )
+        self.assertEqual(self.completions, [])
+
+    def test_wrong_report_blocks_without_release_then_real_envelope_can_commit(self):
+        path, state = self.plan()
+        engine.start(path, state)
+        tree = Path(state["worktree"])
+        (tree / "app.py").write_text("safe = True\n")
+        envelope_path = Path(self.report(path, state))
+        receipt = verify_request.build(
+            argparse.Namespace(request=str(envelope_path.parent / "request.json"))
+        )
+        wrong_path = path.parent / "stdout-receipt.json"
+        for wrong in (receipt, json.loads(envelope_path.read_text())["result"]):
+            wrong_path.write_text(json.dumps(wrong))
+            with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                code = engine.main(
+                    [
+                        "commit",
+                        "--repository",
+                        str(self.root),
+                        "--state",
+                        str(path),
+                        "--report",
+                        str(wrong_path),
+                        "--paths",
+                        "app.py",
+                    ],
+                    kind="request",
+                )
+            self.assertEqual(code, 2)
+            error = json.loads(stderr.getvalue())
+            self.assertEqual(error["error_code"], "request_artifact_mismatch")
+            self.assertIn("--report", error["message"])
+            self.assertEqual(json.loads(path.read_text())["stage"], "started")
+            self.assertEqual(
+                fixtures.git(tree, "rev-parse", "HEAD"), self.original_commit
+            )
+            self.assertEqual(self.completions, [])
+            self.assertFalse((path.parent / "completion.json").exists())
+        engine.commit(
+            path, state, argparse.Namespace(report=str(envelope_path), paths=["app.py"])
+        )
+        self.assertEqual(state["stage"], "committed")
+        self.assertEqual(self.pr_calls, 0)
+        with self.assertRaises(engine.WorkError):
+            requests.verify_source(state, envelope_path, clean=True)
+
+    def test_negative_receipt_never_becomes_passing_evidence(self):
+        path, state = self.plan()
+        engine.start(path, state)
+        sample = json.loads(Path(self.report(path, state)).read_text())["result"]
+        for verdict in ("not_satisfied", "inconclusive"):
+            prepared = self.prepare(path, state)
+            evidence = {**sample, "status": verdict}
+            Path(prepared["verification"]).write_text(json.dumps(evidence))
+            receipt = verify_request.build(
+                argparse.Namespace(request=prepared["request"])
+            )
+            self.assertEqual(receipt["status"], "verified")
+            self.assertEqual(receipt["outcome"], verdict)
+            with self.assertRaises(RequestArtifactError):
+                validate_request_report(receipt)
+            with self.assertRaises(engine.WorkError):
+                requests.verify_source(state, receipt["envelope"])
+
     def test_specified_queue_filter_and_portable_contract(self):
         with (
             mock.patch.object(
@@ -248,6 +367,9 @@ class RequestImplementationTests(TestCase):
             "run_validation.py",
             "--status specified",
             "completion_pending",
+            "request_artifact_mismatch",
+            "three distinct artifacts",
+            "one bounded handoff-recovery attempt",
         ):
             self.assertIn(term, manager)
 

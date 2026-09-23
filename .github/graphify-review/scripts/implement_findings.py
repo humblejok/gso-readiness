@@ -15,6 +15,7 @@ from git_host_contract import HostError, repository_host
 from git_providers import describe, provider_for
 from hub_findings import context, request_json
 from publish_review import PublishError, configured_hub
+from request_contract import RequestArtifactError
 from revalidate_finding import source
 from review_settings import load_settings, process_environment
 from targeted_contract import bounded, digest, validate_targeted
@@ -349,8 +350,9 @@ def main(argv=None, *, kind="finding"):
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except Exception as exc:  # noqa: BLE001 - Sanitized tool/credential boundary; preserve source and branches.
-        message = str(exc) if isinstance(exc, (WorkError, PublishError, HostError, AzureError)) else "Implementation operation blocked. Inspect saved state and inputs; no destructive cleanup was attempted."
-        print(json.dumps({"status": "blocked", "state": args.state, "message": message}), file=sys.stderr)
+        message = str(exc) if isinstance(exc, (WorkError, PublishError, HostError, AzureError, RequestArtifactError)) else "Implementation operation blocked. Inspect saved state and inputs; no destructive cleanup was attempted."
+        details = {"error_code": exc.code} if isinstance(exc, RequestArtifactError) else {}
+        print(json.dumps({"status": "blocked", "state": args.state, "message": message, **details}), file=sys.stderr)
         return 2
     finally:
         if lock_owned and lock is not None and lock.exists():
