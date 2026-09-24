@@ -39,7 +39,9 @@ from .models import (
     Observation,
     Organization,
     OutboxEvent,
+    ProjectRelationship,
     Repository,
+    RequestHandoff,
     RequestImplementation,
     ReviewImport,
     User,
@@ -792,6 +794,24 @@ def export(request, organization_id):
                 first = False
             for name, model, fields in (
                 (
+                    "project_relationships",
+                    ProjectRelationship,
+                    ("id", "source_id", "target_id", "description", "created_at"),
+                ),
+                (
+                    "request_handoffs",
+                    RequestHandoff,
+                    (
+                        "id",
+                        "source_request_id",
+                        "target_id",
+                        "downstream_request_id",
+                        "approved_by",
+                        "snapshot",
+                        "created_at",
+                    ),
+                ),
+                (
                     "request_implementations",
                     RequestImplementation,
                     (
@@ -820,6 +840,9 @@ def export(request, organization_id):
                         "description",
                         "repository_external_id",
                         "analysis",
+                        "handoff",
+                        "closed_from_revision",
+                        "closed_by",
                         "status",
                         "revision",
                     ),
@@ -838,6 +861,7 @@ def export(request, organization_id):
                         "description",
                         "repository_external_id",
                         "analysis",
+                        "handoff",
                         "previous_status",
                         "status",
                     ),
@@ -857,7 +881,9 @@ def export(request, organization_id):
                     ).exists():
                         return
                     record = {
-                        key: value if isinstance(value, int) else str(value)
+                        key: value
+                        if value is None or isinstance(value, (int, str, dict, list, bool, float))
+                        else str(value)
                         for key, value in record.items()
                     }
                     yield ("" if first else ",") + canonical(record)

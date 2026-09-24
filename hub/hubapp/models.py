@@ -162,6 +162,24 @@ class Repository(TenantRecord):
         ]
 
 
+class ProjectRelationship(TenantRecord):
+    """Explicit producer -> consumer relationship within a workspace."""
+
+    source = models.ForeignKey(Repository, on_delete=models.CASCADE, related_name="consumers")
+    target = models.ForeignKey(Repository, on_delete=models.CASCADE, related_name="producers")
+    description = models.CharField(max_length=1000)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source", "target"], name="project_relationship_unique"
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(source=models.F("target")), name="project_relationship_not_self"
+            ),
+        ]
+
+
 class ReviewImport(TenantRecord):
     repository = models.ForeignKey(Repository, on_delete=models.CASCADE)
     run_id = models.CharField(max_length=250)
@@ -264,6 +282,9 @@ class ChangeRequest(TenantRecord):
     created_by = models.CharField(max_length=254)
     repository_external_id = models.CharField(max_length=500, blank=True)
     analysis = models.JSONField(default=dict, blank=True)
+    handoff = models.JSONField(default=dict, blank=True)
+    closed_from_revision = models.PositiveIntegerField(null=True, blank=True)
+    closed_by = models.CharField(max_length=254, blank=True)
     analysis_submission_id = models.UUIDField(null=True, blank=True)
     analysis_submission_digest = models.CharField(max_length=64, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -316,6 +337,7 @@ class ChangeRequestActivity(TenantRecord):
     description = models.TextField()
     repository_external_id = models.CharField(max_length=500, blank=True)
     analysis = models.JSONField(default=dict, blank=True)
+    handoff = models.JSONField(default=dict, blank=True)
     previous_status = models.CharField(max_length=16, blank=True)
     status = models.CharField(max_length=16, choices=ChangeRequest.Status.choices)
     payload_bytes = models.PositiveIntegerField(default=0)
@@ -325,6 +347,28 @@ class ChangeRequestActivity(TenantRecord):
             models.UniqueConstraint(
                 fields=["change_request", "revision"], name="request_revision_unique"
             )
+        ]
+
+
+class RequestHandoff(TenantRecord):
+    """Immutable human-approved publication to one consumer; no automatic acceptance."""
+
+    source_request = models.ForeignKey(
+        ChangeRequest, on_delete=models.CASCADE, related_name="outgoing_handoffs"
+    )
+    target = models.ForeignKey(Repository, on_delete=models.CASCADE)
+    downstream_request = models.OneToOneField(
+        ChangeRequest, on_delete=models.CASCADE, related_name="incoming_handoff"
+    )
+    approved_by = models.CharField(max_length=254)
+    snapshot = models.JSONField()
+    payload_bytes = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source_request", "target"], name="request_handoff_target_unique"
+            ),
         ]
 
 

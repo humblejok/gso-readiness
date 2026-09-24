@@ -277,6 +277,10 @@ def deliver(path, state, args):
     claimed = api(state, {"action": "claim", "revision": state["item"]["revision"], "request_id": state["request_id"]})
     if claimed["attempt_id"] != state["attempt_id"]:
         raise WorkError("Unexpected implementation claim.")
+    handoff = None
+    if state.get("kind") == "request":
+        from implement_requests import prepare_handoff
+        handoff = prepare_handoff(getattr(args, "handoff_file", None), claimed)
     text = summary(args.summary_file)
     if state["stage"] == "committed":
         if remote_sha(tree, state["remote"], state["branch"]) not in {state["base_commit"], state["commit_sha"]}:
@@ -290,7 +294,10 @@ def deliver(path, state, args):
         state["stage"] = "pr_created"
         save(path, state)
     provider.verify(state)
+    if handoff is not None:
+        handoff = {**handoff, "implementation": {"commit_sha": state["commit_sha"], "pull_request": state["pull_request"]}}
     store_completion(path, state, {"outcome": "succeeded", "comment": text, "report": report,
+                                  **({"handoff": handoff} if handoff is not None else {}),
                                   "pull_request": state["pull_request"], "commit_sha": state["commit_sha"], "base_branch": state["base_branch"]})
     return sync(path, state)
 
@@ -301,6 +308,7 @@ def main(argv=None, *, kind="finding"):
     parser.add_argument("--repository", default=".")
     if kind == "request":
         parser.add_argument("--request", help="Hub request UUID displayed on its details page")
+        parser.add_argument("--handoff-file", help="Proposal JSON saved for human review at closure")
     else:
         parser.add_argument("--finding", help="Hub finding UUID (resolve the short ID through the queue)")
     parser.add_argument("--remote", default="origin")

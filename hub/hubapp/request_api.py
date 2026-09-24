@@ -9,7 +9,7 @@ from rest_framework.exceptions import PermissionDenied, Throttled
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import change_requests, request_work
+from . import change_requests, handoffs, request_work
 from .api import paginated, permitted, repository_filter
 from .git_host_contract import HostError
 from .models import ChangeRequest, Repository, RequestImplementation
@@ -26,6 +26,8 @@ def request_data(item):
         "status": item.status,
         "revision": item.revision,
         "analysis": item.analysis,
+        "related_projects": handoffs.relationships(item.repository_external_id),
+        "upstream_handoff": handoffs.incoming(item),
         "analysis_submission_id": str(item.analysis_submission_id)
         if item.analysis_submission_id
         else None,

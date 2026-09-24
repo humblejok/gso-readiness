@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% block title %}Project relationships · Finding Hub{% endblock %}
+{% block content %}
+<h1>Project relationships</h1>
+<p>A producer can have multiple consumers: frontends, services, mobile apps or shared-library users. Relationships identify possible targets; they never create requests automatically. Humans approve affected targets when closing an implemented request.</p>
+<p>Relationships and handoffs stay inside this workspace. Handoff content will be shared with the selected consumer projects, including their project-restricted tokens.</p>
+<section class="panel"><h2>Consumers</h2>
+{% for link in relationships %}<article><h3>{{ link.source.name }} → {{ link.target.name }}</h3><p>{{ link.description }}</p><p class="muted">{{ link.source.external_id }} → {{ link.target.external_id }}</p>
+{% if writable %}<form method="post">{% csrf_token %}<input type="hidden" name="source" value="{{ link.source.pk }}"><input type="hidden" name="target" value="{{ link.target.pk }}"><button name="action" value="remove">Remove relationship</button></form>{% endif %}
+</article>{% empty %}<p>No relationships configured.</p>{% endfor %}</section>
+{% if writable %}<section class="panel"><h2>Add or update a consumer</h2><form method="post">{% csrf_token %}{{ form.as_p }}<button name="action" value="save">Save relationship</button></form><p>Add another relationship for each additional target (up to 20 per producer).</p></section>{% endif %}
+{% endblock %}

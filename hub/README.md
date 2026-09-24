@@ -6,6 +6,8 @@ The application is separate from the `.github` review kit and its installers. Py
 
 ## Local quick start
 
+Cross-project workflows require migration **0011_project_handoffs**. Owners/admins configure producer-to-consumer links in **Project relationships**, with multiple targets supported. Implemented requests have a handoff-review form; only confirmed human closure publishes linked Open requests. Even no-impact requests require an explicit review before closing. Deployment is tracked separately. See [setup, permissions and publication semantics](../docs/cross_project_handoffs.md).
+
 From the repository root, on macOS/Linux:
 
 ```bash

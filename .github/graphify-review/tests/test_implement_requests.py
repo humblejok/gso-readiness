@@ -36,6 +36,7 @@ class RequestImplementationTests(TestCase):
             "description": "Enable safe mode",
             "clone_url": "",
             "display_id": display_id(identifier),
+            "related_projects": [],
             "analysis": {
                 "project_kind": "backend",
                 "specification": "Enable safe mode with regression coverage.",
@@ -152,6 +153,80 @@ class RequestImplementationTests(TestCase):
         self.assertEqual(
             completion["report"]["baseline"]["specification_digest"],
             self.item["specification_digest"],
+        )
+
+    def handoff(self, path):
+        proposal = {
+            "summary": "Expose safe mode.",
+            "contract": "GET /config exposes safe mode.",
+            "compatibility": "Additive response field.",
+            "availability": "proposed",
+            "availability_details": "Not merged or deployed.",
+            "targets": [
+                {
+                    "repository_external_id": "repo:" + name,
+                    "requirements": "Display safe mode.",
+                    "acceptance_criteria": "Test both values.",
+                }
+                for name in ("vue", "mobile")
+            ],
+        }
+        target = path.parent / "handoff.json"
+        target.write_text(json.dumps(proposal))
+        return target
+
+    def test_delivery_binds_multi_target_proposal_to_actual_commit_and_pr(self):
+        self.item["related_projects"] = [
+            {"repository_external_id": "repo:" + name} for name in ("vue", "mobile")
+        ]
+        path, state, args = self.committed()
+        args.handoff_file = str(self.handoff(path))
+        self.fail_sync = True
+        with self.assertRaises(engine.PublishError):
+            engine.deliver(path, state, args)
+        recorded = self.completions[-1]["completion"]
+        self.assertEqual(len(recorded["handoff"]["targets"]), 2)
+        self.assertEqual(
+            recorded["handoff"]["implementation"],
+            {"commit_sha": state["commit_sha"], "pull_request": state["pull_request"]},
+        )
+        self.fail_sync = False
+        engine.sync(path, state)
+        self.assertEqual(self.pr_calls, 1)
+        self.assertEqual(self.completions[0], self.completions[1])
+
+    def test_unconfigured_targets_block_before_push_or_pr(self):
+        path, state, args = self.committed()
+        args.handoff_file = str(self.handoff(path))
+        with self.assertRaisesRegex(engine.WorkError, "configured consumer"):
+            engine.deliver(path, state, args)
+        self.assertEqual(self.pr_calls, 0)
+        self.assertEqual(self.completions, [])
+        self.assertEqual(
+            engine.remote_sha(self.root, "origin", state["branch"]),
+            self.original_commit,
+        )
+
+    def test_handoff_contract_is_portable_and_rejects_duplicate_or_unbounded_input(
+        self,
+    ):
+        from handoff_contract import validate_handoff
+
+        path, _state = self.plan()
+        target = self.handoff(path)
+        proposal = json.loads(target.read_text())
+        validate_handoff(proposal)
+        for invalid in (
+            {"status": "verified"},
+            {**proposal, "targets": proposal["targets"] * 2},
+            {**proposal, "contract": "x" * 16001},
+            {**proposal, "availability": "invented"},
+        ):
+            with self.assertRaises(ValueError):
+                validate_handoff(invalid)
+        self.assertEqual(
+            (KIT / "scripts/handoff_contract.py").read_bytes(),
+            (KIT.parents[1] / "hub/hubapp/handoff_contract.py").read_bytes(),
         )
 
     def test_dirty_checkout_existing_branch_and_explicit_paths(self):

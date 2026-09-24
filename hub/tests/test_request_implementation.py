@@ -3,11 +3,19 @@ from datetime import timedelta
 from io import StringIO
 
 import pytest
+from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.utils import timezone
 
 from hubapp import change_requests
-from hubapp.models import ChangeRequestActivity, Repository, RequestImplementation, Subscription
+from hubapp.models import (
+    ChangeRequestActivity,
+    ProjectRelationship,
+    Repository,
+    RequestHandoff,
+    RequestImplementation,
+    Subscription,
+)
 from hubapp.services import create_workspace, issue_token, usage
 from hubapp.targeted_contract import digest
 from hubapp.tenancy import tenant_scope
@@ -120,7 +128,7 @@ def completion(item, context, outcome="succeeded"):
     }
 
 
-def test_success_history_export_and_exact_retry(client, org, owner, specified):
+def test_success_history_export_and_exact_retry(client, org, owner, specified, no_handoff):
     headers, identity = token(org), str(uuid.uuid4())
     first = claim(client, specified, headers, identity)
     assert first.status_code == 201
@@ -154,7 +162,19 @@ def test_success_history_export_and_exact_retry(client, org, owner, specified):
         attempt = RequestImplementation.objects.get(pk=context["attempt_id"])
         assert digest(attempt.specification) == context["specification_digest"]
         change_requests.update(
-            specified.pk, revision=4, actor=owner.username, action="transition", status="closed"
+            specified.pk,
+            revision=4,
+            actor=owner.username,
+            action="edit_handoff",
+            handoff=no_handoff,
+        )
+        change_requests.update(
+            specified.pk,
+            revision=5,
+            actor=owner.username,
+            action="transition",
+            status="closed",
+            handoff_reviewed=True,
         )
     assert (
         post(
@@ -174,6 +194,98 @@ def test_success_history_export_and_exact_retry(client, org, owner, specified):
     )
     export = b"".join(client.get(f"/w/{org.id}/export/").streaming_content)
     assert b'"request_implementations"' in export and b"not merged or deployed" in export
+
+
+def test_worker_only_saves_proposal_human_closure_publishes(
+    client, org, owner, specified, no_handoff
+):
+    with tenant_scope(org.pk):
+        source = Repository.objects.get(external_id="repo:orders")
+        for name in ("web", "mobile"):
+            target = Repository.objects.create(external_id="repo:" + name, name=name)
+            ProjectRelationship.objects.create(
+                source=source, target=target, description="Consumes orders"
+            )
+    headers = token(org)
+    context = claim(client, specified, headers).json()
+    assert len(context["related_projects"]) == 2
+    proposal = {
+        **no_handoff,
+        "summary": "Consumers should expose order export.",
+        "availability": "proposed",
+        "targets": [
+            {
+                "repository_external_id": "repo:" + name,
+                "requirements": "Expose export action.",
+                "acceptance_criteria": "Test permissions and returned data.",
+            }
+            for name in ("web", "mobile")
+        ],
+    }
+    data = {**completion(specified, context), "handoff": proposal}
+    bad = {**data, "handoff": {**proposal, "availability": "production_available"}}
+    assert (
+        post(
+            client,
+            specified,
+            headers,
+            action="complete",
+            attempt_id=context["attempt_id"],
+            completion=bad,
+        ).status_code
+        == 400
+    )
+    response = post(
+        client,
+        specified,
+        headers,
+        action="complete",
+        attempt_id=context["attempt_id"],
+        completion=data,
+    )
+    assert response.status_code == 200
+    with tenant_scope(org.pk):
+        specified.refresh_from_db()
+        assert specified.status == "implemented" and not RequestHandoff.objects.exists()
+        assert specified.handoff["implementation"]["commit_sha"] == data["commit_sha"]
+        assert specified.handoff["implementation"]["pull_request"] == data["pull_request"]
+        with pytest.raises(ValidationError) as error:
+            change_requests.update(
+                specified.pk,
+                revision=specified.revision,
+                actor=owner.username,
+                action="edit_handoff",
+                handoff={
+                    **specified.handoff,
+                    "implementation": {
+                        "commit_sha": "f" * 40,
+                        "pull_request": data["pull_request"],
+                    },
+                },
+            )
+        assert "verified implementation" in str(error.value)
+        closed = change_requests.update(
+            specified.pk,
+            revision=specified.revision,
+            actor=owner.username,
+            action="transition",
+            status="closed",
+            handoff_reviewed=True,
+        )
+        assert closed.status == "closed" and RequestHandoff.objects.count() == 2
+    assert (
+        post(
+            client,
+            specified,
+            headers,
+            action="complete",
+            attempt_id=context["attempt_id"],
+            completion=data,
+        ).json()
+        == response.json()
+    )
+    with tenant_scope(org.pk):
+        assert RequestHandoff.objects.count() == 2
 
 
 @pytest.mark.parametrize(

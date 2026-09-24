@@ -31,6 +31,20 @@ Only an already configured Sonar destination/project may be used. Verify tools a
 
 ## Direct independent verification, commit and PR
 
+### Prepare a downstream handoff proposal (never publish it)
+
+Before provisional verification, inspect the actual changes against the accepted intent and `related_projects` from the request context. Save `handoff.json` outside source in the attempt directory. Include exactly:
+
+- `summary`: feature intent or explicit reason no consumer work is needed (4,000 characters).
+- `contract`: final new/changed routes or interoperability mechanisms, request/response fields, auth, permissions, errors, examples and contract file references (16,000).
+- `compatibility`: breaking changes, migration/version requirements, or None with reason (8,000).
+- `availability`: `proposed` for this unmerged implementation; `availability_details`: actual limitations/test prerequisites (2,000). Do not claim deployment from tests or PR creation.
+- `targets`: zero to 20 confirmed affected configured consumers; each has `repository_external_id`, target-specific `requirements` (8,000), and `acceptance_criteria` (8,000). Zero targets must have an explicit no-impact reason. Do not fan out blindly, invent product scope, or silently omit an affected consumer; ask if the intended project/relationship is missing.
+
+Limit the full JSON to 64 KiB and exclude secrets. Do not supply implementation metadata: the helper/Hub binds the actual commit and PR. Give the proposal to the independent verifier as additional context to check factual consistency with the actual contract. This is a draft for human approval, not a replacement for verifier evidence or a downstream acceptance verdict. The accepted specification still governs local code; creating a handoff never satisfies a requirement to implement external code.
+
+Use `--handoff-file <attempt-dir>/handoff.json` with request delivery below. Success saves the proposal on the Implemented request but creates **no downstream requests**. A human can edit the proposal, select multiple related targets, state deployment availability and validate/close in the Hub. Only that human closure atomically creates one linked Open request per selected target. Cancelled requests never publish; downstream requests still require their own analysis and acceptance. Never call a closure endpoint, use Django shell, or mark a request Closed on the user's behalf.
+
 There are **three distinct artifacts**. Never substitute one for another:
 
 | Artifact | Producer and fields | Consumer |
@@ -45,7 +59,7 @@ There are **three distinct artifacts**. Never substitute one for another:
 8. Serialize only the actual verifier's complete returned object (`status`, `rationale`, `reviewer`, `evidence`, `checks`, `acceptance`) as UTF-8 JSON at the returned verification path. Missing/denied output or readiness acknowledgement is not verification; do not fill missing evidence or fabricate an envelope. Run `verify_request.py build --request <request-path>`. Interpret its stdout as the **build receipt**, not verifier evidence: require command success, `status=verified`, **outcome=satisfied**, and the generated `envelope` path. All required checks and every approved acceptance criterion must pass. Changed source/specification invalidates the run: prepare again and reverify, never patch hashes or commit fields.
 9. On provisional satisfied, inspect the exact diff and run `implement_requests.py commit --repository <original-checkout> --state <state> --report <provisional-envelope> --paths <explicit-relative-files...>`. No `git add -A`, manual commits or remote operations outside the helper. It commits only the exact verified changed files; unexpected files/commits block.
 10. Prepare a **new** `verify_request.py prepare` request for the clean committed worktree, **without --allow-dirty**, and make a fresh direct Request Implementation Verifier call. Serialize/build as above; require satisfied bound to the actual final commit. No stale provisional report reuse. Reports are request-verification envelopes, not review/finding envelopes or cryptographically signed attestations. They are never sent to finding revalidation APIs.
-11. Write a factual UTF-8 completion summary (up to 8,000 characters) in the attempt directory: implemented requirements, relevant paths/contracts, actual acceptance/tests, Sonar fixed/deferred/unavailable details and limitations. Run `implement_requests.py deliver --repository <original-checkout> --state <state> --report <clean-envelope> --summary-file <summary>`. It rechecks the current claim/approved revision, pushes the exact commit, creates/verifies an open PR to the original base, then completes the Hub claim. Only confirmed success marks this request **Implemented** and records the summary/PR. No separate lifecycle edits, no auto-merge, Closed status or Jira updates.
+11. Write a factual UTF-8 completion summary (up to 8,000 characters) in the attempt directory: implemented requirements, relevant paths/contracts, actual acceptance/tests, Sonar fixed/deferred/unavailable details and limitations. Run `implement_requests.py deliver --repository <original-checkout> --state <state> --report <clean-envelope> --summary-file <summary> --handoff-file <attempt-dir>/handoff.json`. It rechecks the current claim/approved revision and configured consumers, pushes the exact commit, creates/verifies an open PR to the original base, then completes the Hub claim with the proposal. Only confirmed success marks this request **Implemented** and records the summary/PR. No separate lifecycle edits, no auto-merge, Closed status, downstream publication or Jira updates.
 
 ## Failure and recovery
 

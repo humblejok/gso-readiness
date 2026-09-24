@@ -64,3 +64,15 @@ def envelope():
 @pytest.fixture
 def key(envelope):
     return f"{envelope['repository']['external_id']}:{envelope['review']['run']['run_id']}"
+
+
+@pytest.fixture
+def no_handoff():
+    return {
+        "summary": "No downstream work: this change is internal.",
+        "contract": "None: no interface changes.",
+        "compatibility": "No consumer migration required.",
+        "availability": "unknown",
+        "availability_details": "Deployment not confirmed.",
+        "targets": [],
+    }

@@ -43,6 +43,7 @@ urlpatterns = [
     path("w/<uuid:organization_id>/", views.dashboard),
     path("w/<uuid:organization_id>/requests/", request_views.index),
     path("w/<uuid:organization_id>/requests/new/", request_views.new),
+    path("w/<uuid:organization_id>/project-relationships/", request_views.project_relationships),
     path("w/<uuid:organization_id>/requests/<uuid:pk>/", request_views.detail),
     path("w/<uuid:organization_id>/findings/<uuid:pk>/", views.finding_detail),
     path(

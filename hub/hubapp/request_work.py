@@ -8,6 +8,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
+from . import handoffs
 from .change_requests import RequestConflict, _record
 from .finding_work import storage_budget
 from .git_host_contract import validate_pr_url
@@ -36,6 +37,8 @@ def context(item):
         "display_id": display_id(item.pk),
         "specification_digest": digest(approved),
         "clone_url": repo.clone_url,
+        "related_projects": handoffs.relationships(item.repository_external_id),
+        "upstream_handoff": handoffs.incoming(item),
     }
 
 
@@ -110,7 +113,18 @@ def complete(pk, attempt_id, body, actor, repository_external_id):
     if (
         not isinstance(body, dict)
         or set(body)
-        != {"outcome", "comment", "report", "pull_request", "commit_sha", "base_branch"}
+        not in (
+            {"outcome", "comment", "report", "pull_request", "commit_sha", "base_branch"},
+            {
+                "outcome",
+                "comment",
+                "report",
+                "pull_request",
+                "commit_sha",
+                "base_branch",
+                "handoff",
+            },
+        )
         or body["outcome"] not in {"succeeded", "failed"}
         or not bounded(body["comment"], 8000)
         or len(json.dumps(body).encode()) > 256 * 1024
@@ -156,8 +170,18 @@ def complete(pk, attempt_id, body, actor, repository_external_id):
             raise ValidationError(
                 "Success requires the current approved specification, clean verified commit and feature-branch PR."
             )
+        if "handoff" in body:
+            proposal = handoffs.checked(item, body["handoff"])
+            if proposal["availability"] != "proposed":
+                raise ValidationError(
+                    "Implementation may propose a contract, not attest deployment availability."
+                )
+            proposal["implementation"] = {key: body[key] for key in ("commit_sha", "pull_request")}
+            item.handoff = proposal
     elif body["report"] is not None:
         raise ValidationError("A failed completion must not carry a success report.")
+    elif "handoff" in body:
+        raise ValidationError("A failed completion cannot propose a handoff.")
     previous_bytes = item.payload_bytes
     if body["outcome"] == "succeeded":
         item.status = "implemented"

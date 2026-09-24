@@ -93,7 +93,7 @@ def test_create_edit_and_history(client, owner, org, kind):
         assert AuditEvent.objects.filter(action__startswith="request.").count() == 2
 
 
-def test_workflow_no_skips_backwards_or_closed_edits(client, owner, org, item):
+def test_workflow_no_skips_backwards_or_closed_edits(client, owner, org, item, no_handoff):
     client.force_login(owner)
     url = f"/w/{org.id}/requests/{item.pk}/"
     response = client.post(url, {"action": "transition", "status": "implemented", "revision": 1})
@@ -101,6 +101,16 @@ def test_workflow_no_skips_backwards_or_closed_edits(client, owner, org, item):
     with tenant_scope(org.id):
         analyze(item, owner.username)
     for revision, status in enumerate(["specified", "implemented", "closed"], start=2):
+        if status == "closed":
+            with tenant_scope(org.id):
+                change_requests.update(
+                    item.pk,
+                    revision=revision,
+                    actor=owner.username,
+                    action="edit_handoff",
+                    handoff=no_handoff,
+                )
+            revision += 1
         assert (
             client.post(
                 url,
@@ -108,21 +118,22 @@ def test_workflow_no_skips_backwards_or_closed_edits(client, owner, org, item):
                     "action": "accept" if status == "specified" else "transition",
                     "status": status,
                     "revision": revision,
+                    "handoff_reviewed": "on",
                 },
             ).status_code
             == 302
         )
     assert b"closed and read-only" in client.get(url).content
     for data in (
-        {"action": "edit", "kind": "feature", "description": "Changed", "revision": 5},
-        {"action": "transition", "status": "open", "revision": 5},
+        {"action": "edit", "kind": "feature", "description": "Changed", "revision": 6},
+        {"action": "transition", "status": "open", "revision": 6, "handoff_reviewed": "on"},
     ):
         assert b"Closed requests are read-only" in client.post(url, data).content
     with tenant_scope(org.id):
         item.refresh_from_db()
-        assert item.status == "closed" and item.revision == 5
-        assert ChangeRequestActivity.objects.count() == 5
-        assert ChangeRequestActivity.objects.get(revision=5).previous_status == "implemented"
+        assert item.status == "closed" and item.revision == 6
+        assert ChangeRequestActivity.objects.count() == 6
+        assert ChangeRequestActivity.objects.get(revision=6).previous_status == "implemented"
 
 
 def test_stale_forms_and_noop_save(org, owner, item):

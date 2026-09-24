@@ -48,6 +48,8 @@ For request specification work, see [the separate `/analyse-requests` workflow](
 
 After accepting the analysis, run `/implement-requests` or `/implement-requests requests=<request-UUID>,<request-UUID>`. It implements only **Specified** requests for the configured project, using their accepted specifications. Each request gets an isolated `feature/REQ-<UUID>` remote branch, native build/test validation, optional configured Sonar MCP feedback, direct independent subagent verification before and after committing, and a PR to the original branch. Confirmed success marks it **Implemented** (not Closed, merged or deployed); failure leaves it Specified with a reason. Requires Hub migration **0010** and token scopes **requests:read** + **requests:implement**. See [setup, safety and recovery](docs/request_implementation_workflow.md).
 
+For applications split across repositories, configure **Project relationships** in the Hub (migration **0011**). A producer can have multiple consumers. Implementation saves a target-specific handoff proposal; only human validation and **Close and publish approved handoffs** creates linked Open requests for the selected targets. Cancellation never publishes. See [cross-project setup and workflow](docs/cross_project_handoffs.md).
+
 ### Azure DevOps Server and Services
 
 Update the `.github` kit in the reviewed project and deploy/restart the updated Hub. This adapter adds no database migration beyond the existing implementation migration. Git still handles branches/commits/pushes with your configured credentials; only PR operations use the hosting API. The Hub does not receive Azure credentials.

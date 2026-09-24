@@ -4,6 +4,8 @@
 
 ## Setup
 
+For split applications, see [cross-project handoffs](cross_project_handoffs.md). With Hub migration **0011**, analysis reads configured consumer relationships and any approved upstream handoff. It scopes acceptance to the current repository and still requires human review. A source request's confirmed human closure creates the downstream Open request; analysis never publishes or accepts it.
+
 1. Deploy the updated Hub and run migration `0009_request_analysis` using the deployment's usual configuration, then restart. Back up first. Existing requests/history are preserved.
 2. Update the reviewed project's `.github` kit and start a fresh VS Code chat with your desired model. Keep the configured Hub URL, workspace, stable repository ID and corporate proxy/CA settings.
 3. Create/edit the request in the Hub and select its **Project**. Projects are registered repositories in that workspace. Unassigned requests remain valid drafts but are excluded from analysis to avoid using the wrong checkout. The checkout's stable repository ID must match this project.

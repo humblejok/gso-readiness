@@ -16,6 +16,8 @@ Read the native build/test receipt instructions in [Targeted Finding Verifier](t
 
 Return exactly `status`, `rationale`, `reviewer`, `evidence`, `checks`, `acceptance`:
 
+When given a handoff proposal, verify its factual contract/compatibility statements against the actual diff and the accepted intent. Record that assessment in the existing checks/evidence fields; do not add a handoff field to your output schema. A handoff is a proposal, not proof downstream code is implemented or deployed. Do not publish, approve, close or modify downstream requests. Availability at upstream approval is historical context, not a live integration check.
+
 This is the **raw verifier evidence object**, not a `verify_request.py build` receipt or report envelope. Never return `status=verified`, `outcome`, `envelope`, `artifact_kind`, or a top-level `result` wrapper. Those belong to later helper output. If supplied a build receipt as context, request the actual prepared request/worktree/specification instead of copying or relabeling that receipt. Only the manager runs the packaging helper.
 
 - `status`: `satisfied`, `not_satisfied`, or `inconclusive`. Only satisfied can advance implementation. Unknown or unavailable evidence cannot satisfy a request.

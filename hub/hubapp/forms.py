@@ -81,6 +81,94 @@ class RequestAnalysisForm(forms.Form):
     )
 
 
+class ProjectRelationshipForm(forms.Form):
+    source = forms.ModelChoiceField(queryset=Repository.objects.none(), label="Producer project")
+    target = forms.ModelChoiceField(queryset=Repository.objects.none(), label="Consumer project")
+    description = forms.CharField(
+        max_length=1000,
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 3}),
+        label="What does this consumer depend on?",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name in ("source", "target"):
+            self.fields[name].queryset = Repository.objects.order_by("name")
+
+
+class RequestClosureForm(ChangeRequestTransitionForm):
+    handoff_reviewed = forms.BooleanField(
+        label="I validated the implementation and reviewed the downstream handoff and selected targets. Close and publish the selected Open requests."
+    )
+
+
+class HandoffForm(forms.Form):
+    revision = forms.IntegerField(min_value=1, widget=forms.HiddenInput)
+    summary = forms.CharField(
+        max_length=4000,
+        widget=forms.Textarea(attrs={"rows": 3}),
+        label="Feature intent / reason no downstream work is needed",
+    )
+    contract = forms.CharField(
+        max_length=16000,
+        widget=forms.Textarea(attrs={"rows": 8}),
+        label="Routes, contracts, authentication, errors and examples (or None with reason)",
+    )
+    compatibility = forms.CharField(
+        max_length=8000,
+        widget=forms.Textarea(attrs={"rows": 4}),
+        label="Compatibility / breaking changes / migration",
+    )
+    availability = forms.ChoiceField(
+        choices=[
+            ("unknown", "Unknown"),
+            ("proposed", "Proposed / PR only"),
+            ("merged", "Merged, deployment unconfirmed"),
+            ("test_available", "Available in test"),
+            ("production_available", "Available in production"),
+        ]
+    )
+    availability_details = forms.CharField(
+        max_length=2000,
+        widget=forms.Textarea(attrs={"rows": 3}),
+        label="Availability evidence, environment and limitations",
+    )
+    commit_sha = forms.CharField(
+        max_length=64,
+        required=False,
+        label="Exact implementation commit (required for publication)",
+    )
+    pull_request = forms.URLField(
+        max_length=1000,
+        required=False,
+        assume_scheme="https",
+        label="Implementation PR (required for publication)",
+    )
+
+
+class HandoffTargetForm(forms.Form):
+    repository_external_id = forms.ChoiceField(label="Consumer")
+    selected = forms.BooleanField(
+        required=False, label="Create a downstream request for this consumer when closed"
+    )
+    requirements = forms.CharField(
+        max_length=8000, required=False, widget=forms.Textarea(attrs={"rows": 4})
+    )
+    acceptance_criteria = forms.CharField(
+        max_length=8000, required=False, widget=forms.Textarea(attrs={"rows": 4})
+    )
+
+    def __init__(self, *args, choices=(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["repository_external_id"].choices = choices
+
+
+HandoffTargetFormSet = forms.formset_factory(
+    HandoffTargetForm, extra=0, max_num=40, validate_max=True, absolute_max=40
+)
+
+
 class SignupForm(UserCreationForm):
     email = forms.EmailField(max_length=150)
 

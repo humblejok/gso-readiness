@@ -4,14 +4,16 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from django.db import DatabaseError, close_old_connections, connection, transaction
 
-from hubapp import change_requests, finding_work, request_work
+from hubapp import change_requests, finding_work, handoffs, request_work
 from hubapp.imports import import_review
 from hubapp.models import (
     ChangeRequest,
     ChangeRequestActivity,
     Finding,
     FindingActivity,
+    ProjectRelationship,
     Repository,
+    RequestHandoff,
     RequestImplementation,
     ReviewImport,
 )
@@ -25,6 +27,91 @@ pytestmark = [
         reason="PostgreSQL is required for database isolation/concurrency tests",
     ),
 ]
+
+
+def test_postgres_handoff_closure_concurrency_and_tenant_guards(org, owner, no_handoff):
+    other = create_workspace(owner, "Other handoff workspace")
+    with tenant_scope(org.pk):
+        source = Repository.objects.create(
+            external_id="source", name="Source", clone_url="https://github.com/team/source"
+        )
+        targets = [
+            Repository.objects.create(external_id="target-" + str(n), name="Consumer")
+            for n in range(2)
+        ]
+        for target in targets:
+            handoffs.configure_relationship(source.pk, target.pk, "Consumes API", owner.username)
+        item = change_requests.create(
+            kind="feature",
+            description="New API",
+            actor=owner.username,
+            repository_external_id=source.external_id,
+        )
+        ChangeRequest.objects.filter(pk=item.pk).update(status="implemented")
+        proposal = {
+            **no_handoff,
+            "implementation": {
+                "commit_sha": "a" * 40,
+                "pull_request": "https://github.com/team/source/pull/1",
+            },
+            "targets": [
+                {
+                    "repository_external_id": target.external_id,
+                    "requirements": "Consume API",
+                    "acceptance_criteria": "Contract tests pass",
+                }
+                for target in targets
+            ],
+        }
+        item = change_requests.update(
+            item.pk, revision=1, actor=owner.username, action="edit_handoff", handoff=proposal
+        )
+
+    def run():
+        close_old_connections()
+        try:
+            with tenant_scope(org.pk):
+                return change_requests.update(
+                    item.pk,
+                    revision=item.revision,
+                    actor=owner.username,
+                    action="transition",
+                    status="closed",
+                    handoff_reviewed=True,
+                ).status
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert list(executor.map(lambda _: run(), range(2))) == ["closed", "closed"]
+    with tenant_scope(org.pk):
+        assert RequestHandoff.objects.count() == 2
+        assert ChangeRequest.objects.count() == 3
+        link = RequestHandoff.objects.first()
+    with tenant_scope(other.pk):
+        for table in ("hubapp_projectrelationship", "hubapp_requesthandoff"):
+            with connection.cursor() as cursor:
+                cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                assert cursor.fetchone()[0] == 0
+        target = Repository.objects.create(external_id="foreign", name="Foreign")
+        child = change_requests.create(
+            kind="bug", description="Other request", actor=owner.username
+        )
+        with pytest.raises(DatabaseError), transaction.atomic():
+            ProjectRelationship.all_objects.create(
+                organization=other, source=source, target=target, description="Foreign reference"
+            )
+        with pytest.raises(DatabaseError), transaction.atomic():
+            RequestHandoff.all_objects.create(
+                organization=other,
+                source_request=item,
+                target=target,
+                downstream_request=child,
+                approved_by=owner.username,
+                snapshot={},
+            )
+    with tenant_scope(org.pk), pytest.raises(DatabaseError), transaction.atomic():
+        RequestHandoff.all_objects.filter(pk=link.pk).update(organization=other)
 
 
 def test_postgres_concurrent_import_is_idempotent(org, envelope, key):

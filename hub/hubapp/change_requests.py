@@ -7,7 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from .contracts import canonical
-from .models import ChangeRequest, ChangeRequestActivity, Organization, Repository
+from .models import ChangeRequest, ChangeRequestActivity, Organization, Repository, RequestHandoff
 from .services import audit, require_writes, usage
 from .tenancy import current_tenant
 
@@ -24,6 +24,7 @@ def _record(item, actor, action, previous_status="", previous_bytes=0):
         "revision": item.revision,
         "repository_external_id": item.repository_external_id,
         "analysis": item.analysis,
+        "handoff": item.handoff,
     }
     item.payload_bytes = len(canonical(snapshot).encode("utf-8"))
     history_bytes = len(
@@ -80,10 +81,22 @@ def update(
     status=None,
     repository_external_id=None,
     analysis=None,
+    handoff=None,
+    handoff_reviewed=False,
 ):
     Organization.objects.select_for_update().get(pk=current_tenant(), suspended=False)
     item = ChangeRequest.objects.select_for_update().get(pk=pk)
     require_writes()
+    if (
+        item.status == "closed"
+        and action == "transition"
+        and status == "closed"
+        and handoff_reviewed is True
+        and type(revision) is int
+        and revision == item.closed_from_revision
+        and actor == item.closed_by
+    ):
+        return item
     if type(revision) is not int or revision != item.revision:
         raise RequestConflict(
             "This request changed since you opened it. Reload the page and review the latest version before saving."
@@ -98,6 +111,13 @@ def update(
             raise ValidationError("Provide a description.")
         item.kind, item.description = kind, description.strip()
         if repository_external_id is not None:
+            if (
+                repository_external_id != item.repository_external_id
+                and RequestHandoff.objects.filter(downstream_request=item).exists()
+            ):
+                raise ValidationError(
+                    "A published handoff stays assigned to its approved target project."
+                )
             validate_project(repository_external_id)
             item.repository_external_id = repository_external_id
         item.full_clean()
@@ -112,7 +132,7 @@ def update(
         ).exists():
             return item
         event = "edited"
-        item.status, item.analysis = "open", {}
+        item.status, item.analysis, item.handoff = "open", {}, {}
     elif action == "cancel":
         if actor != item.created_by:
             raise ValidationError("Only the request creator can cancel it.")
@@ -125,7 +145,16 @@ def update(
         validate_analysis(analysis)
         if analysis == item.analysis:
             return item
-        item.analysis, item.status, event = analysis, "analyzed", "edited"
+        item.analysis, item.status, item.handoff, event = analysis, "analyzed", {}, "edited"
+    elif action == "edit_handoff":
+        from .handoffs import checked
+
+        if item.status != "implemented":
+            raise ValidationError("Review handoffs after implementation, before closing.")
+        proposal = checked(item, handoff)
+        if proposal == item.handoff:
+            return item
+        item.handoff, event = proposal, "edited"
     elif action == "accept":
         if item.status != "analyzed":
             raise ValidationError("Only an analyzed request can be accepted.")
@@ -136,6 +165,19 @@ def update(
             raise ValidationError("Move to the next workflow stage; stages cannot be skipped.")
         if status in {"analyzed", "specified"}:
             raise ValidationError("Submit an analysis, then explicitly accept it after review.")
+        if status == "closed":
+            from .handoffs import checked
+
+            if handoff_reviewed is not True:
+                raise ValidationError(
+                    "Confirm human validation and review of downstream impacts before closing."
+                )
+            if not item.handoff:
+                raise ValidationError(
+                    "Save the handoff review first, including a reason when no targets are affected."
+                )
+            item.handoff = checked(item, item.handoff)
+            item.closed_from_revision, item.closed_by = item.revision, actor
         item.status = status
         event = "transitioned"
     else:
@@ -148,7 +190,12 @@ def update(
     RequestImplementation.objects.filter(change_request=item, status="running").update(
         status="cancelled"
     )
-    return _record(item, actor, event, previous_status, previous_bytes)
+    result = _record(item, actor, event, previous_status, previous_bytes)
+    if action == "transition" and status == "closed":
+        from .handoffs import publish
+
+        publish(item, actor)
+    return result
 
 
 def validate_project(value):

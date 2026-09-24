@@ -7,8 +7,33 @@ from pathlib import Path
 import hub_requests
 import implement_findings as engine
 from export_review import read_json, write_new_json
+from handoff_contract import validate_handoff
 from request_contract import display_id, specification, validate_request_report
 from targeted_contract import digest
+
+
+def prepare_handoff(filename, current):
+    if not filename:
+        return None  # Human closure still requires an explicit review.
+    if "related_projects" not in current:
+        raise engine.WorkError("Update the Hub through migration 0011 before submitting handoff proposals.")
+    proposal, _ = read_json(Path(filename))
+    try:
+        validate_handoff(proposal)
+    except ValueError as exc:
+        raise engine.WorkError(str(exc)) from exc
+    allowed = {
+        row["repository_external_id"] for row in current.get("related_projects", [])
+    }
+    if any(row["repository_external_id"] not in allowed for row in proposal["targets"]):
+        raise engine.WorkError(
+            "Handoff targets must be currently configured consumer projects."
+        )
+    if proposal["availability"] != "proposed":
+        raise engine.WorkError(
+            "An unmerged implementation handoff must use proposed availability. Humans can update it before closing."
+        )
+    return proposal
 
 
 def plan(args):

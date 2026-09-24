@@ -120,7 +120,7 @@ def test_creator_can_cancel_and_stale_analysis_cannot_win(
         assert item.status == "cancelled" and item.next_status is None
 
 
-def test_cancellation_ownership_and_terminal_limits(client, owner, org, item, analysis):
+def test_cancellation_ownership_and_terminal_limits(client, owner, org, item, analysis, no_handoff):
     other = User.objects.create_user(username="reviewer@example.invalid", email_verified=True)
     Membership.objects.create(user=other, organization=org, role="admin")
     client.force_login(other)
@@ -139,10 +139,18 @@ def test_cancellation_ownership_and_terminal_limits(client, owner, org, item, an
         with pytest.raises(ValidationError, match="cannot be cancelled"):
             change_requests.update(item.pk, revision=4, actor=owner.username, action="cancel")
         item = change_requests.update(
-            item.pk, revision=4, actor=owner.username, action="transition", status="closed"
+            item.pk, revision=4, actor=owner.username, action="edit_handoff", handoff=no_handoff
+        )
+        item = change_requests.update(
+            item.pk,
+            revision=5,
+            actor=owner.username,
+            action="transition",
+            status="closed",
+            handoff_reviewed=True,
         )
         with pytest.raises(ValidationError, match="read-only"):
-            change_requests.update(item.pk, revision=5, actor=owner.username, action="cancel")
+            change_requests.update(item.pk, revision=6, actor=owner.username, action="cancel")
 
 
 def test_project_or_description_edits_require_fresh_analysis(org, owner, item, analysis):

@@ -10,6 +10,7 @@ from django.contrib.auth.hashers import make_password
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 from django.db.models import Sum
+from django.db.models.functions import Length
 from django.utils import timezone
 
 from .models import (
@@ -20,7 +21,9 @@ from .models import (
     FindingActivity,
     Membership,
     Organization,
+    ProjectRelationship,
     RateBucket,
+    RequestHandoff,
     RequestImplementation,
     ReviewImport,
     Subscription,
@@ -79,7 +82,11 @@ def usage():
         + (FindingActivity.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0)
         + (ChangeRequest.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0)
         + (ChangeRequestActivity.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0)
-        + (RequestImplementation.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0),
+        + (RequestImplementation.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0)
+        + (RequestHandoff.objects.aggregate(total=Sum("payload_bytes"))["total"] or 0)
+        + (ProjectRelationship.objects.aggregate(total=Sum(Length("description")))["total"] or 0)
+        * 4
+        + ProjectRelationship.objects.count() * 256,
     }
 
 

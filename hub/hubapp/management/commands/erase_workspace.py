@@ -44,6 +44,8 @@ class Command(BaseCommand):
                 raise CommandError("Cancel and reconcile the provider subscription before erasure.")
             # Explicit ordering handles protected Jira relationships. The user's account is retained.
             for model in (
+                models.RequestHandoff,
+                models.ProjectRelationship,
                 models.RequestImplementation,
                 models.ChangeRequestActivity,
                 models.ChangeRequest,

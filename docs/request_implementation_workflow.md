@@ -4,6 +4,8 @@
 
 ## Setup and usage
 
+Cross-project extension: deploy migration **0011_project_handoffs**, configure consumer relationships and update the kit. The command now saves a handoff proposal with delivery; **only human closure publishes** linked Open requests. Reviewers must save the handoff review (or no-impact reason) before closing. See [cross-project handoffs](cross_project_handoffs.md).
+
 1. Update the project's installed `.github` kit, including both new request implementation agents and the prompt. Reload the VS Code window if discovery needs refreshing. The active manager must be allowed to call **Request Implementation Verifier** directly. No nested subagent permission is required; readiness is checked before claiming work.
 2. Update the Hub and run `python manage.py migrate` from `hub/` using its environment (includes migration **0010_request_implementation**). Restart the Hub processes. Do not run the migration with the review-kit environment.
 3. Grant the saved token **requests:read** and **requests:implement**, or issue a replacement. Analysis permission does not grant implementation authority. Personal tech-lead tokens require a configured workspace ID; tenant/project restrictions and subscription write limits still apply. Reuse saved Hub/Git credentials, proxy and CA configuration; never put secrets in prompts.

@@ -19,6 +19,24 @@
       }
     },
     "schemas": {
+      "HandoffProposal": {
+        "type": "object", "additionalProperties": false,
+        "description": "At most 64 KiB. Saves a draft only. Implementation completion requires proposed availability and binds actual commit/PR. Human UI review and closure alone publish Open requests to configured consumers.",
+        "required": ["summary", "contract", "compatibility", "availability", "availability_details", "targets"],
+        "properties": {
+          "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+          "contract": {"type": "string", "minLength": 1, "maxLength": 16000},
+          "compatibility": {"type": "string", "minLength": 1, "maxLength": 8000},
+          "availability": {"enum": ["unknown", "proposed", "merged", "test_available", "production_available"]},
+          "availability_details": {"type": "string", "minLength": 1, "maxLength": 2000},
+          "implementation": {"type": "object", "additionalProperties": false, "required": ["commit_sha", "pull_request"], "properties": {"commit_sha": {"type": "string"}, "pull_request": {"type": "string", "maxLength": 1000}}},
+          "targets": {"type": "array", "maxItems": 20, "items": {"type": "object", "additionalProperties": false, "required": ["repository_external_id", "requirements", "acceptance_criteria"], "properties": {
+            "repository_external_id": {"type": "string", "minLength": 1, "maxLength": 500},
+            "requirements": {"type": "string", "minLength": 1, "maxLength": 8000},
+            "acceptance_criteria": {"type": "string", "minLength": 1, "maxLength": 8000}
+          }}}
+        }
+      },
       "RequestAnalysis": {
         "type": "object", "additionalProperties": false,
         "required": ["project_kind", "specification", "new_interfaces", "changed_interfaces", "breaking_changes"],
@@ -168,7 +186,7 @@
       "parameters": [{"in": "path", "name": "id", "required": true, "schema": {"type": "string", "format": "uuid"}}],
       "get": {
         "operationId": "getRequestAnalysisContext",
-        "description": "Requires requests:read; tenant and repository restrictions apply.",
+        "description": "Requires requests:read; tenant and repository restrictions apply. Context includes related_projects (configured consumers) and upstream_handoff (approved snapshot intentionally shared with this target, or null).",
         "responses": {"200": {"description": "Current request context, revision and analysis"}, "404": {"description": "Not found or inaccessible"}}
       },
       "post": {
@@ -186,7 +204,7 @@
       "parameters": [{"in": "path", "name": "id", "required": true, "schema": {"type": "string", "format": "uuid"}}],
       "get": {
         "operationId": "getRequestImplementationContext",
-        "description": "Requires requests:read. Returns current request UUID, revision, project, kind, description, analysis, status, display_id (REQ-UUID), specification_digest and clone_url. Claim additionally enforces Specified status.",
+        "description": "Requires requests:read. Returns current request UUID, revision, project, kind, description, analysis, status, display_id (REQ-UUID), specification_digest, clone_url, related_projects and upstream_handoff. Claim additionally enforces Specified status. Optional completion handoff saves a draft only; human closure in the Hub is required to publish.",
         "responses": {"200": {"description": "Approved-specification context"}, "400": {"description": "Missing complete specification or active project"}, "403": {"description": "Insufficient scope"}, "404": {"description": "Absent or inaccessible"}}
       },
       "post": {
@@ -202,7 +220,8 @@
               "completion": {"type": "object", "additionalProperties": false, "required": ["outcome", "comment", "report", "pull_request", "commit_sha", "base_branch"], "properties": {
                 "outcome": {"enum": ["succeeded", "failed"]}, "comment": {"type": "string", "minLength": 1, "maxLength": 8000},
                 "report": {"type": ["object", "null"], "description": "Success: request-verification schema_version 1.0, run_id UUID, repository_external_id, baseline {request_id UUID, revision, specification_digest sha256}, source {commit_sha, branch, snapshot_hash sha256, dirty false}, result {status satisfied, rationale, reviewer, evidence [{path,fact}], checks [{command,status,summary}], acceptance [{criterion,status,evidence}]}. Every check/criterion must pass; evidence/checks/acceptance each contain 1-100 bounded entries. Frozen digest/revision and exact feature/REQ-UUID commit must match claim. Failure: null. See docs/request_implementation_workflow.md and portable request_contract.py for complete validation."},
-                "pull_request": {"type": "string", "maxLength": 1000}, "commit_sha": {"type": "string"}, "base_branch": {"type": "string"}
+                "pull_request": {"type": "string", "maxLength": 1000}, "commit_sha": {"type": "string"}, "base_branch": {"type": "string"},
+                "handoff": {"$ref": "#/components/schemas/HandoffProposal"}
               }}
             }}
           ]
