@@ -32,6 +32,7 @@ Then use either:
 ```text
 /implement-findings findings=ARCH-C001,COR-C005
 /implement-findings
+/implement-findings retry=<failed-attempt-directory-UUID>
 ```
 
 Without a filter, all queued open findings for this configured project are selected. Each runs sequentially in an isolated worktree on `feature/<short-ID>`, from the original checkout's commit. The remote branch is created before edits. A passing independent revalidation allows an explicit-file commit; a second revalidation of that clean commit precedes pushing and creating a PR to the original branch. Only then is the Hub finding resolved, unqueued and given a factual summary/PR link. **Resolved on the feature branch does not mean merged or deployed.** Nothing automatically merges a PR or resolves Jira.

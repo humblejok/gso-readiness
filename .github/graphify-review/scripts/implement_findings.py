@@ -1,5 +1,6 @@
 """Bounded Git/Hub workflow helpers. The coding agent edits code and verifies evidence separately."""
 import argparse
+import copy
 import json
 import os
 import re
@@ -16,9 +17,10 @@ from git_providers import describe, provider_for
 from hub_findings import context, request_json
 from publish_review import PublishError, configured_hub
 from request_contract import RequestArtifactError
+from revalidate_finding import prepare as prepare_targeted
 from revalidate_finding import source
 from review_settings import load_settings, process_environment
-from targeted_contract import bounded, digest, validate_targeted
+from targeted_contract import TargetedError, bounded, digest, validate_targeted
 
 
 class WorkError(ValueError):
@@ -150,7 +152,119 @@ def api(state, data):
     return request_json(Path(state["root"]), "POST", f"/api/v1/findings/{uuid.UUID(state['item']['finding_id'])}/implementation", data, state["hub_url"])
 
 
+def recovery_checks(path, state):
+    """Read-only ownership checks; recovery never resets or pushes the retained branch."""
+    state = copy.deepcopy(state)  # Provider identity preflight must not rewrite history.
+    completion, _ = read_json(path.parent / "completion.json")
+    if (state.get("kind", "finding") != "finding" or state["stage"] != "completed"
+            or completion.get("outcome") != "failed" or not state.get("attempt_id")
+            or any(state.get(key) or completion.get(key) for key in ("commit_sha", "pull_request", "pr_submission_started"))):
+        raise WorkError("Recovery supports only confirmed failed finding attempts before any implementation commit or PR. Sync pending completions; inspect committed/uncertain delivery separately.")
+    root, tree = Path(state["root"]), Path(state["worktree"])
+    if (run(root, "git", "status", "--porcelain")
+            or run(root, "git", "symbolic-ref", "--quiet", "--short", "HEAD") != state["base_branch"]
+            or run(root, "git", "rev-parse", "HEAD") != state["base_commit"]):
+        raise WorkError("Original checkout must remain clean at the captured base branch/commit. Recovery does not rebase or discard changes.")
+    if (Path(run(tree, "git", "rev-parse", "--show-toplevel")).resolve() != tree.resolve()
+            or (tree / run(tree, "git", "rev-parse", "--git-common-dir")).resolve()
+            != (root / run(root, "git", "rev-parse", "--git-common-dir")).resolve()
+            or run(tree, "git", "symbolic-ref", "--quiet", "--short", "HEAD") != state["branch"]
+            or run(tree, "git", "rev-parse", "HEAD") != state["base_commit"]
+            or state["branch"] != "feature/" + state["item"]["display_id"]):
+        raise WorkError("Retained worktree identity/branch/commit differs from the failed attempt; no changes made.")
+    provider = bound_provider(state)
+    provider.preflight()
+    for branch in (state["base_branch"], state["branch"]):
+        if remote_sha(root, state["remote"], branch) != state["base_commit"]:
+            raise WorkError("Remote base or retained feature branch changed or is missing. Recovery will not overwrite or recreate it.")
+    provider.require_no_pr(state)
+    return completion
+
+
+def recovery_context(state):
+    root = Path(state["root"])
+    if configured_hub(root) != state["hub_url"]:
+        raise WorkError("Hub destination changed; restore the original configured destination.")
+    item = context(root, state["item"]["finding_id"], state["hub_url"])
+    stable = ("finding_id", "display_id", "repository_external_id", "clone_url", "fingerprint",
+              "baseline_observation_id", "baseline_import_id", "remediation")
+    if (any(item.get(key) != state["item"].get(key) for key in stable)
+            or item["revision"] != state["item"]["revision"] + 1
+            or item["lifecycle"] != "open" or not item["to_implement"]):
+        raise WorkError("Hub baseline, proposal, queue or revision changed beyond the recorded failure. Review the new scope; do not reuse this implementation automatically.")
+    return item
+
+
+def retry(path, state):
+    """Create one successor without editing historical state, reports or completion."""
+    directory = path.parent / "retry"
+    successor = directory / "state.json"
+    if successor.exists():
+        saved, _ = read_json(successor)
+        if saved.get("recovery", {}).get("predecessor_digest") != digest(state):
+            raise WorkError("Historical state changed after recovery was planned.")
+        return {"state": str(successor), "stage": saved["stage"], "worktree": saved["worktree"],
+                "message": "Existing recovery returned; use this state, never a second claim. If it failed, retry that successor instead."}
+    completion = recovery_checks(path, state)
+    item = recovery_context(state)
+    # Exact completion replay proves this failure was acknowledged by this Hub/actor.
+    # The server returns the immutable receipt; it does not append another failure.
+    api(state, {"action": "complete", "attempt_id": state["attempt_id"], "completion": completion})
+    baseline, _ = read_json(Path(state.get("baseline_path", str(Path(state["worktree"]).parent / "baseline-review.json"))))
+    current = request_json(Path(state["root"]), "GET", "/api/v1/review-imports/" + str(uuid.UUID(item["baseline_import_id"])), expected_hub=state["hub_url"])
+    if digest(baseline) != digest(current["payload"]["review"]):
+        raise WorkError("Frozen baseline differs from the Hub import; no recovery created.")
+    new_state = {key: state[key] for key in ("schema_version", "root", "hub_url", "base_branch", "base_commit", "branch", "remote", "worktree")}
+    new_state.update(item=item, hosting=hosting(copy.deepcopy(state)), credential_context=credential_context(Path(state["root"])),
+                     request_id=str(uuid.uuid4()), stage="planned", baseline_path=str(directory / "baseline-review.json"),
+                     recovery={"predecessor": str(path), "predecessor_digest": digest(state),
+                               "completion_digest": digest(completion), "retained_source": source(Path(state["worktree"]))})
+    # Publish both files together; interruption cannot leave a half-written successor.
+    temporary = Path(tempfile.mkdtemp(prefix=".retry-", dir=path.parent))
+    write_new_json(temporary / "baseline-review.json", baseline)
+    write_new_json(temporary / "state.json", new_state)
+    os.rename(temporary, directory)
+    return {"state": str(successor), "stage": "planned", "worktree": new_state["worktree"],
+            "message": "Failure history preserved. Start this recovery to acquire a new claim, then prepare fresh provisional verification."}
+
+
+def start_recovery(path, state):
+    if state["stage"] not in {"planned", "started"}:
+        raise WorkError("Recovery has advanced; do not restart it.")
+    predecessor = Path(state["recovery"]["predecessor"])
+    old, _ = read_json(predecessor)
+    if digest(old) != state["recovery"]["predecessor_digest"]:
+        raise WorkError("Historical attempt changed; recovery blocked.")
+    completion = recovery_checks(predecessor, old)
+    if digest(completion) != state["recovery"]["completion_digest"] or recovery_context(old) != state["item"]:
+        raise WorkError("Recovery inputs changed; do not replace saved revisions or evidence.")
+    claimed = api(state, {"action": "claim", "revision": state["item"]["revision"], "request_id": state["request_id"]})
+    if (claimed["baseline_observation_id"] != state["item"]["baseline_observation_id"]
+            or claimed["remediation"] != state["item"]["remediation"]
+            or (state.get("attempt_id") and claimed["attempt_id"] != state["attempt_id"])):
+        raise WorkError("Recovery claim does not match the frozen proposal/baseline.")
+    state.update(attempt_id=claimed["attempt_id"], stage="started")
+    save(path, state)
+    return {"state": str(path), "stage": "started", "worktree": state["worktree"],
+            "baseline": state["baseline_path"], "finding_id": state["item"]["display_id"],
+            "remediation": claimed["remediation"], "branch": state["branch"], "base_branch": state["base_branch"]}
+
+
+def prepare_verification(path, state):
+    if state.get("kind", "finding") != "finding" or state["stage"] not in {"started", "committed"}:
+        raise WorkError("Prepare verification only for a started or committed finding attempt.")
+    phase = "provisional" if state["stage"] == "started" else "committed"
+    result = prepare_targeted(argparse.Namespace(repository=state["worktree"],
+        baseline=state.get("baseline_path", str(path.parent / "baseline-review.json")),
+        finding=state["item"]["display_id"], repository_id=state["item"]["repository_external_id"], allow_dirty=phase == "provisional"))
+    state.setdefault("verification_runs", {})[phase] = result["run_id"]
+    save(path, state)
+    return {**result, "phase": phase, "state": str(path)}
+
+
 def start(path, state):
+    if state.get("recovery"):
+        return start_recovery(path, state)
     root, tree = Path(state["root"]), Path(state["worktree"])
     if state["stage"] not in {"planned", "claimed", "worktree_created", "started"}:
         raise WorkError("This attempt has advanced; do not start it again.")
@@ -197,7 +311,11 @@ def verify_source(state, report_path, clean=False):
     report, _ = read_json(Path(report_path))
     validate_targeted(report)
     tree = Path(state["worktree"])
-    baseline, _ = read_json(Path(state["worktree"]).parent / "baseline-review.json")
+    baseline, _ = read_json(Path(state.get("baseline_path", str(tree.parent / "baseline-review.json"))))
+    if state.get("recovery"):
+        phase = "committed" if clean else "provisional"
+        if report["run_id"] != state.get("verification_runs", {}).get(phase):
+            raise WorkError("Recovery requires fresh verification: use prepare-verification for this phase and call the independent verifier again. Historical reports cannot be reused.")
     if (report["baseline"]["fingerprint"] != state["item"]["fingerprint"]
             or report["baseline"]["finding_id"] != state["item"]["display_id"]
             or report["baseline"]["review_digest"] != digest(baseline)
@@ -304,7 +422,8 @@ def deliver(path, state, args):
 
 def main(argv=None, *, kind="finding"):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("plan", "start", "commit", "deliver", "fail", "sync"))
+    actions = ("plan", "start", "commit", "deliver", "fail", "sync")
+    parser.add_argument("action", choices=actions + (("retry", "prepare-verification") if kind == "finding" else ()))
     parser.add_argument("--repository", default=".")
     if kind == "request":
         parser.add_argument("--request", help="Hub request UUID displayed on its details page")
@@ -341,6 +460,10 @@ def main(argv=None, *, kind="finding"):
                 raise WorkError("State belongs to a different checkout. Use its original --repository.")
             if args.action == "start":
                 result = start(path, state)
+            elif args.action == "retry":
+                result = retry(path, state)
+            elif args.action == "prepare-verification":
+                result = prepare_verification(path, state)
             elif args.action == "commit":
                 result = commit(path, state, args)
             elif args.action == "deliver":
@@ -358,7 +481,7 @@ def main(argv=None, *, kind="finding"):
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except Exception as exc:  # noqa: BLE001 - Sanitized tool/credential boundary; preserve source and branches.
-        message = str(exc) if isinstance(exc, (WorkError, PublishError, HostError, AzureError, RequestArtifactError)) else "Implementation operation blocked. Inspect saved state and inputs; no destructive cleanup was attempted."
+        message = str(exc) if isinstance(exc, (WorkError, PublishError, HostError, AzureError, TargetedError, RequestArtifactError)) else "Implementation operation blocked. Inspect saved state and inputs; no destructive cleanup was attempted."
         details = {"error_code": exc.code} if isinstance(exc, RequestArtifactError) else {}
         print(json.dumps({"status": "blocked", "state": args.state, "message": message, **details}), file=sys.stderr)
         return 2

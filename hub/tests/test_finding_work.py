@@ -232,6 +232,31 @@ def test_failure_keeps_open_queued_and_adds_reason(org, finding):
             finding_work.complete(finding.id, attempt.id, body, "worker")
 
 
+def test_failed_attempt_can_be_reclaimed_without_rewriting_failure(org, finding, envelope):
+    with tenant_scope(org.id):
+        _, first = queued_claim(finding)
+        failed = complete_body(None, "failed")
+        finding_work.complete(finding.id, first.id, failed, "worker")
+        first.refresh_from_db()
+        old_data, old_comment = first.data.copy(), first.comment
+        finding.refresh_from_db()
+        successor, created = finding_work.claim(
+            finding.id, finding.implementation_revision, uuid.uuid4(), "worker"
+        )
+        assert created and successor.id != first.id
+        replay, created = finding_work.claim(
+            finding.id, successor.revision, successor.request_id, "worker"
+        )
+        assert not created and replay.id == successor.id
+        report = report_for(finding, envelope)
+        report["result"]["rationale"] += " Optional Sonar unavailable; full Quality Gate not verified."
+        finding_work.complete(finding.id, successor.id, complete_body(report), "worker")
+        first.refresh_from_db()
+        assert first.status == "failed" and first.data == old_data and first.comment == old_comment
+        finding.refresh_from_db()
+        assert finding.lifecycle == "resolved" and not finding.implementation_requested
+
+
 def test_expired_claim_and_imported_baseline_invalidate_worker(org, finding, envelope):
     with tenant_scope(org.id):
         queued, first = queued_claim(finding)

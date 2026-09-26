@@ -77,6 +77,26 @@ class SonarWorkflowTests(unittest.TestCase):
             with self.subTest(constraint=constraint):
                 self.assertIn(constraint, self.manager)
 
+    def test_optional_limitations_are_not_required_checks_or_fabricated_passes(self):
+        for name in ("targeted-finding-verifier", "request-implementation-verifier"):
+            _, verifier = document(f"agents/{name}.agent.md")
+            with self.subTest(verifier=name):
+                self.assertIn("`rationale`", verifier)
+                self.assertIn("full Quality Gate was not verified", verifier)
+                self.assertIn("required", verifier)
+                self.assertIn("Every recorded check", verifier)
+        for instruction in ("not in required `checks`", "never delete a check", "preserve its output",
+                            "fresh independent assessment", "terminal failed attempt"):
+            self.assertIn(instruction, self.manager)
+
+    def test_recovery_preserves_history_and_requires_new_verification_in_each_phase(self):
+        self.assertIn("retry=", self.prompt_header["argument-hint"])
+        self.assertIn("or reuse old verification", self.prompt)
+        for instruction in ("Repeat the direct verifier readiness preflight", "successor state",
+                            "each provisional and committed phase", "prepare-verification",
+                            "new exclusive Hub claim"):
+            self.assertIn(instruction, self.manager)
+
 
 class DirectVerifierWorkflowTests(unittest.TestCase):
     def setUp(self):

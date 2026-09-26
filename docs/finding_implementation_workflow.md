@@ -70,6 +70,38 @@ Azure PR creation additionally saves `pr_submission_started` before POST. After 
 
 The Git host and Hub do not share a distributed transaction. A PR can exist while Hub synchronization is blocked; report both facts rather than claiming atomic cross-service success. Likewise, a cancellation received during a remote Git operation cannot undo that remote operation, but it prevents stale Hub resolution. Resolution in this workflow attests the validated feature branch, not the default branch, merge, CI policy approval or deployment.
 
+### Retry a confirmed failed attempt before commit
+
+For a retained implementation that failed **before any implementation commit or PR**, update the trusted kit and start a fresh VS Code chat with:
+
+```text
+/implement-findings retry=<failed-attempt-directory-UUID>
+```
+
+The UUID resolves to `.github/graphify-review/output/implementations/<UUID>/state.json`. An explicit state path is also accepted. Only that finding is processed; an optional `findings` filter must include it. This is not a queue-wide branch-collision override. Do not delete the existing branch/worktree, edit `state.json`, change the failed completion, or unqueue/requeue the finding to bypass its revision guard.
+
+The manager uses `implement_findings.py retry --repository <original-checkout> --state <failed-state>` to create one successor at `<failed-attempt>/retry/state.json`. Historical state, baseline, verifier output and completion remain intact. The existing worktree/code and feature branch are reused without resets, branch overwrites or new remote writes during recovery. The helper verifies the acknowledged failure by replaying its exact Hub completion, which returns the existing receipt without another history entry. The successor uses a new client request ID and a new exclusive Hub claim at the post-failure revision. The previous Hub failure remains visible.
+
+Automatic recovery deliberately stops if:
+
+- Completion is pending/uncertain, any implementation commit or PR is recorded, or PR submission was attempted with uncertain outcome.
+- The original checkout is dirty or no longer at the captured base branch/commit; the retained worktree belongs to another repository/branch or has any new commit.
+- The remote feature or target branch has moved/disappeared, or any PR exists for the source branch, including closed PRs and other targets.
+- Credentials/destination, baseline, remediation, lifecycle, queue flag or revision changed beyond the single failure completion.
+
+These cases require human inspection and a separately agreed integration/rebase strategy, not a forced retry. Installing updated kit files must not silently change the captured base or leave the original checkout dirty; if it does, recovery reports that blocker. There is no automatic reset to undo the update. No Hub schema migration is required for this recovery feature.
+
+After direct verifier readiness, use `start` with the **successor** state. An uncertain claim response retries that same `start`, never generates a new client ID. Repeating `retry` on the predecessor returns the existing successor. If that successor later fails before commit, explicitly retry its state path to create its own successor; the original UUID will still return the first successor. CLI operations use exclusive worker locks; do not remove locks while a worker is alive.
+
+Recovery then follows the normal implementation/Sonar/PR workflow with two new independent verifications:
+
+1. Inspect the retained diff, preserve previous evidence, rerun required checks, and save new supplementary Sonar limitations under the successor directory.
+2. Call `implement_findings.py prepare-verification --repository <original-checkout> --state <successor-state>` in stage `started`. This prepares a new source-bound provisional request and saves its run ID. Invoke Targeted Finding Verifier directly, save its actual output at the returned verification path and run `revalidate_finding.py build --request <new-request>`.
+3. Pass the new resolved envelope to `commit --paths <explicit-files...>`. Historical reports are rejected even if the source hash happens to match.
+4. Call `prepare-verification` again in stage `committed`, invoke the independent verifier again against the actual clean commit, and build a new envelope. Pass that to `deliver --report <clean-envelope> --summary-file <new-summary>`.
+
+The run IDs and source/commit bindings are machine-checked; truthful independent agent calls and fresh test execution remain workflow requirements, not cryptographic attestations. Old passing tests/verdicts are context, not substitutes for either new phase. The completion summary must retain any optional Sonar limitation and say the full gate was not verified when unavailable. No PR is merged by recovery or delivery.
+
 ## API contract
 
 All routes derive tenant identity from the bearer token and enforce any repository restriction. Short IDs are display labels; mutation routes use the Hub finding UUID. See [OpenAPI](../hub/contracts/openapi.json).
@@ -105,7 +137,7 @@ To use the updated workflow:
 2. Start a fresh VS Code chat in the intended repository, using Finding Implementation Manager, with the agent/runSubagent tool enabled. No nested-subagent setting is needed; do not add the obsolete `chat.customAgentInSubagent.enabled` key. If the direct call is denied, inspect chat customization diagnostics for agent loading errors and the actual tool call error. The workflow change removes nesting, not host permissions or discovery requirements.
 3. For an existing failed attempt, stop the old worker and inspect its state. The normal `implement_findings.py fail` path releases a valid active claim and keeps the finding open/queued with a reason. A `completion_pending` attempt instead needs `sync`; an uncertain Azure PR submission requires inspection/recovery, not replacement with a failure. Hub **Cancel implementation** cancels the claim and unqueues the item if cancellation is intended. Requeueing does not remove an existing feature branch.
 
-Do not delete state, locks, worktrees or branches, overwrite a remote branch, or relabel old evidence to make a retry pass. Existing branch collisions remain blockers. Availability checks and independent invocation are Copilot workflow instructions, not a machine-enforced authorization/signature mechanism. The kit tests exercise the delegation contract and source-bound packaging, but live VS Code/Copilot authorization must be checked in the target environment.
+Do not delete state, locks, worktrees or branches, overwrite a remote branch, or relabel old evidence to make a retry pass. Existing branch collisions remain blockers for ordinary starts; the explicit pre-commit recovery above is the only supported owned-branch reuse path. Availability checks and independent invocation are Copilot workflow instructions, not a machine-enforced authorization/signature mechanism. The kit tests exercise the delegation contract and source-bound packaging, but live VS Code/Copilot authorization must be checked in the target environment.
 
 ## Targeted envelope and persistence
 

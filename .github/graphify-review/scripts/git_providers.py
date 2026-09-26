@@ -45,6 +45,11 @@ class GitHub:
     def preflight(self):
         self.run(self.root, "gh", "auth", "status", "--hostname", self.host["github_repository"].split("/", 1)[0])
 
+    def require_no_pr(self, state):
+        matches = json.loads(self.run(self.root, "gh", "pr", "list", "--repo", self.host["github_repository"], "--head", state["branch"], "--state", "all", "--json", "url"))
+        if not isinstance(matches, list) or matches:
+            raise HostError("Recovery requires no existing PR for the retained branch, including closed PRs and other targets.")
+
     def ensure_pr(self, state, path, text, checkpoint):
         tree, repo = Path(state["worktree"]), self.host["github_repository"]
         matches = json.loads(self.run(tree, "gh", "pr", "list", "--repo", repo, "--head", state["branch"], "--base", state["base_branch"], "--state", "all", "--json", "url,state,headRefOid"))
@@ -94,6 +99,13 @@ class AzureDevOps:
             return pull_request_url(self.host["clone_url"], pr["pullRequestId"])
         except (KeyError, ValueError, TypeError) as exc:
             raise AzureError("Azure PR does not match the active validated source/target/repository, or auto-completion is enabled. Hub remains unchanged.") from exc
+
+    def require_no_pr(self, state):
+        listing = request(self.root, self.host, "GET", "/pullrequests", {
+            "searchCriteria.sourceRefName": "refs/heads/" + state["branch"],
+            "searchCriteria.status": "all", "$top": 1})
+        if listing.get("value") != [] or type(listing.get("count")) is not int or listing["count"] != 0:
+            raise AzureError("Recovery requires no existing PR for the retained branch, including closed PRs and other targets.")
 
     def ensure_pr(self, state, path, text, checkpoint):
         # Request two matches: one is reusable, more than one is ambiguous. We
