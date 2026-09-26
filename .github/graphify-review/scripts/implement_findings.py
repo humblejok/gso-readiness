@@ -158,8 +158,12 @@ def recovery_checks(path, state):
     completion, _ = read_json(path.parent / "completion.json")
     if (state.get("kind", "finding") != "finding" or state["stage"] != "completed"
             or completion.get("outcome") != "failed" or not state.get("attempt_id")
-            or any(state.get(key) or completion.get(key) for key in ("commit_sha", "pull_request", "pr_submission_started"))):
-        raise WorkError("Recovery supports only confirmed failed finding attempts before any implementation commit or PR. Sync pending completions; inspect committed/uncertain delivery separately.")
+            or any(state.get(key) or completion.get(key) for key in ("pull_request", "pr_submission_started"))):
+        raise WorkError("Recovery supports only confirmed failed finding attempts without a PR or uncertain PR submission. Sync pending completions; inspect uncertain delivery separately.")
+    retained_commit = state.get("commit_sha", "")
+    if (retained_commit != completion.get("commit_sha", "")
+            or (retained_commit and not re.fullmatch(r"[a-f0-9]{40,64}", retained_commit))):
+        raise WorkError("Retained commit must match the acknowledged failed completion exactly.")
     root, tree = Path(state["root"]), Path(state["worktree"])
     if (run(root, "git", "status", "--porcelain")
             or run(root, "git", "symbolic-ref", "--quiet", "--short", "HEAD") != state["base_branch"]
@@ -169,13 +173,22 @@ def recovery_checks(path, state):
             or (tree / run(tree, "git", "rev-parse", "--git-common-dir")).resolve()
             != (root / run(root, "git", "rev-parse", "--git-common-dir")).resolve()
             or run(tree, "git", "symbolic-ref", "--quiet", "--short", "HEAD") != state["branch"]
-            or run(tree, "git", "rev-parse", "HEAD") != state["base_commit"]
+            or run(tree, "git", "rev-parse", "HEAD") != (retained_commit or state["base_commit"])
             or state["branch"] != "feature/" + state["item"]["display_id"]):
         raise WorkError("Retained worktree identity/branch/commit differs from the failed attempt; no changes made.")
+    if retained_commit:
+        if run(tree, "git", "status", "--porcelain"):
+            raise WorkError("Committed recovery requires a clean retained worktree; preserve and inspect any later edits separately.")
+        parents = run(tree, "git", "rev-list", "--parents", "-n", "1", retained_commit).split()
+        if parents != [retained_commit, state["base_commit"]]:
+            raise WorkError("Retained implementation must be one non-merge commit directly on the captured base; recovery will not rewrite commits.")
     provider = bound_provider(state)
     provider.preflight()
     for branch in (state["base_branch"], state["branch"]):
-        if remote_sha(root, state["remote"], branch) != state["base_commit"]:
+        allowed = {state["base_commit"]}
+        if retained_commit and branch == state["branch"]:
+            allowed.add(retained_commit)
+        if remote_sha(root, state["remote"], branch) not in allowed:
             raise WorkError("Remote base or retained feature branch changed or is missing. Recovery will not overwrite or recreate it.")
     provider.require_no_pr(state)
     return completion
@@ -219,17 +232,22 @@ def retry(path, state):
                      request_id=str(uuid.uuid4()), stage="planned", baseline_path=str(directory / "baseline-review.json"),
                      recovery={"predecessor": str(path), "predecessor_digest": digest(state),
                                "completion_digest": digest(completion), "retained_source": source(Path(state["worktree"]))})
+    if state.get("commit_sha"):
+        new_state["commit_sha"] = state["commit_sha"]
+        new_state["recovery"]["resume_stage"] = "committed"
     # Publish both files together; interruption cannot leave a half-written successor.
     temporary = Path(tempfile.mkdtemp(prefix=".retry-", dir=path.parent))
     write_new_json(temporary / "baseline-review.json", baseline)
     write_new_json(temporary / "state.json", new_state)
     os.rename(temporary, directory)
     return {"state": str(successor), "stage": "planned", "worktree": new_state["worktree"],
-            "message": "Failure history preserved. Start this recovery to acquire a new claim, then prepare fresh provisional verification."}
+            "verification_phase": "committed" if new_state.get("commit_sha") else "provisional",
+            "message": "Failure history preserved. Start this recovery to acquire a new claim, then prepare fresh verification for the returned phase."}
 
 
 def start_recovery(path, state):
-    if state["stage"] not in {"planned", "started"}:
+    resume_stage = state["recovery"].get("resume_stage", "started")
+    if state["stage"] not in {"planned", resume_stage}:
         raise WorkError("Recovery has advanced; do not restart it.")
     predecessor = Path(state["recovery"]["predecessor"])
     old, _ = read_json(predecessor)
@@ -238,14 +256,18 @@ def start_recovery(path, state):
     completion = recovery_checks(predecessor, old)
     if digest(completion) != state["recovery"]["completion_digest"] or recovery_context(old) != state["item"]:
         raise WorkError("Recovery inputs changed; do not replace saved revisions or evidence.")
+    expected_stage = "committed" if old.get("commit_sha") else "started"
+    if resume_stage != expected_stage or state.get("commit_sha", "") != old.get("commit_sha", ""):
+        raise WorkError("Recovery must retain the exact failed attempt's commit.")
     claimed = api(state, {"action": "claim", "revision": state["item"]["revision"], "request_id": state["request_id"]})
     if (claimed["baseline_observation_id"] != state["item"]["baseline_observation_id"]
             or claimed["remediation"] != state["item"]["remediation"]
             or (state.get("attempt_id") and claimed["attempt_id"] != state["attempt_id"])):
         raise WorkError("Recovery claim does not match the frozen proposal/baseline.")
-    state.update(attempt_id=claimed["attempt_id"], stage="started")
+    state.update(attempt_id=claimed["attempt_id"], stage=resume_stage)
     save(path, state)
-    return {"state": str(path), "stage": "started", "worktree": state["worktree"],
+    return {"state": str(path), "stage": state["stage"], "worktree": state["worktree"],
+            **({"commit_sha": state["commit_sha"]} if resume_stage == "committed" else {}),
             "baseline": state["baseline_path"], "finding_id": state["item"]["display_id"],
             "remediation": claimed["remediation"], "branch": state["branch"], "base_branch": state["base_branch"]}
 

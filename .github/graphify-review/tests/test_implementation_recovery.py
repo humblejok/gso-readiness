@@ -23,14 +23,22 @@ class RecoveryTests(unittest.TestCase):
     plan = fixture.ImplementationTests.plan
     report = fixture.ImplementationTests.report
 
-    def failed(self):
+    def failed(self, *, committed=False, pushed=False, extra_commit=False):
         path, state = self.plan()
         work.start(path, state)
         tree = Path(state["worktree"])
         (tree / "app.py").write_text("safe = True\n")
         historical = Path(self.report(path, state))
+        if committed:
+            work.commit(path, state, argparse.Namespace(report=str(historical), paths=["app.py"]))
+            if extra_commit:
+                git(tree, "commit", "--allow-empty", "-m", "Unexpected extra commit")
+                state["commit_sha"] = git(tree, "rev-parse", "HEAD")
+            historical = Path(self.report(path, state))
+            if pushed:
+                git(tree, "push", "origin", "HEAD:refs/heads/" + state["branch"])
         body = {"outcome": "failed", "comment": "Optional Sonar was unavailable; report rejected.",
-                "report": None, "pull_request": "", "commit_sha": "", "base_branch": "main"}
+                "report": None, "pull_request": "", "commit_sha": state.get("commit_sha", ""), "base_branch": "main"}
         work.store_completion(path, state, body)
         work.sync(path, state)
         self.item = copy.deepcopy(self.item)
@@ -118,13 +126,87 @@ class RecoveryTests(unittest.TestCase):
                 work.retry(path, state)
         self.assertFalse((path.parent / "retry").exists())
 
-    def test_committed_pending_uncertain_and_wrong_workflow_attempts_block(self):
+    def test_pending_uncertain_and_wrong_workflow_attempts_block(self):
         path, state, _ = self.failed()
-        for change in ({"stage": "completion_pending"}, {"commit_sha": "a" * 40},
+        for change in ({"stage": "completion_pending"},
                        {"pr_submission_started": True}, {"pull_request": "https://example.invalid/pr/1"},
                        {"kind": "request"}):
             with self.subTest(change=change), self.assertRaisesRegex(work.WorkError, "confirmed failed"):
                 work.retry(path, {**state, **change})
+
+    def test_committed_recovery_delivers_same_commit_only_after_fresh_verification(self):
+        path, state, historical = self.failed(committed=True)
+        originals = {p: p.read_bytes() for p in (path, historical, path.parent / "completion.json")}
+        sha = state["commit_sha"]
+        successor, new = self.successor(path, state)
+        result = work.start(successor, new)
+        self.assertEqual(result["stage"], "committed")
+        self.assertEqual(result["commit_sha"], sha)
+        self.assertNotEqual(new["attempt_id"], state["attempt_id"])
+        self.assertEqual(work.start(successor, new)["stage"], "committed")
+        self.assertNotIn("verification_runs", new)
+        with self.assertRaisesRegex(work.WorkError, "started attempt"):
+            work.commit(successor, new, argparse.Namespace(report=str(historical), paths=["app.py"]))
+        summary = successor.parent / "summary.txt"
+        summary.write_text("Recovered the retained implementation after fresh committed verification.")
+        args = argparse.Namespace(report=str(historical), summary_file=str(summary))
+        with self.assertRaisesRegex(work.WorkError, "fresh verification"):
+            work.deliver(successor, new, args)
+        args.report = self.fresh_report(successor, new)
+        self.assertEqual(set(new["verification_runs"]), {"committed"})
+        work.deliver(successor, new, args)
+        self.assertEqual(git(Path(new["worktree"]), "rev-parse", "HEAD"), sha)
+        self.assertEqual(work.remote_sha(self.root, "origin", new["branch"]), sha)
+        self.assertEqual(self.completions[-1]["completion"]["commit_sha"], sha)
+        self.assertEqual(self.pr_calls, 1)
+        for artifact, data in originals.items():
+            self.assertEqual(artifact.read_bytes(), data)
+
+    def test_already_pushed_retained_commit_without_pr_can_resume(self):
+        path, state, _ = self.failed(committed=True, pushed=True)
+        successor, new = self.successor(path, state)
+        work.start(successor, new)
+        self.assertEqual(new["stage"], "committed")
+        self.assertEqual(work.remote_sha(self.root, "origin", new["branch"]), state["commit_sha"])
+
+    def test_committed_recovery_rejects_mismatching_failed_receipt(self):
+        path, state, _ = self.failed(committed=True)
+        with self.assertRaisesRegex(work.WorkError, "acknowledged failed completion"):
+            work.retry(path, {**state, "commit_sha": "a" * 40})
+
+    def test_committed_recovery_rejects_extra_commit_in_recorded_history(self):
+        path, state, _ = self.failed(committed=True, extra_commit=True)
+        with self.assertRaisesRegex(work.WorkError, "one non-merge commit"):
+            work.retry(path, state)
+
+    def test_committed_recovery_rejects_dirty_tree_and_preserves_edits(self):
+        path, state, _ = self.failed(committed=True)
+        tree = Path(state["worktree"])
+        (tree / "app.py").write_text("Later user changes\n")
+        with self.assertRaisesRegex(work.WorkError, "clean retained worktree"):
+            work.retry(path, state)
+        self.assertEqual((tree / "app.py").read_text(), "Later user changes\n")
+
+    def test_commit_changed_after_recovery_plan_blocks_claim(self):
+        path, state, _ = self.failed(committed=True)
+        successor, new = self.successor(path, state)
+        tree = Path(state["worktree"])
+        git(tree, "commit", "--allow-empty", "-m", "Later commit")
+        with self.assertRaisesRegex(work.WorkError, "Retained worktree identity"):
+            work.start(successor, new)
+        self.assertNotIn("attempt_id", json.loads(successor.read_text()))
+
+    def test_missing_committed_verifier_output_cannot_produce_delivery_report(self):
+        path, state, _ = self.failed(committed=True)
+        successor, new = self.successor(path, state)
+        work.start(successor, new)
+        with mock.patch.object(revalidate_finding, "KIT_ROOT", self.temp / "kit"):
+            prepared = work.prepare_verification(successor, new)
+        self.assertEqual(prepared["phase"], "committed")
+        with self.assertRaises(FileNotFoundError):
+            revalidate_finding.build(argparse.Namespace(request=prepared["request"], verification=None))
+        self.assertFalse((Path(prepared["request"]).parent / "revalidation-envelope.json").exists())
+        self.assertEqual(self.pr_calls, 0)
 
     def test_existing_pr_even_closed_or_other_target_blocks(self):
         path, state, _ = self.failed()

@@ -97,6 +97,13 @@ class SonarWorkflowTests(unittest.TestCase):
                             "new exclusive Hub claim"):
             self.assertIn(instruction, self.manager)
 
+    def test_committed_recovery_keeps_commit_and_requires_real_verifier_output(self):
+        for instruction in ("stage=committed", "Skip implementation edits, provisional verification",
+                            "never invent `verification.json`", "Do not amend",
+                            "fresh `resolved` envelope", "exact commit"):
+            self.assertIn(instruction, self.manager)
+        self.assertIn("deliver the existing commit", self.prompt)
+
 
 class DirectVerifierWorkflowTests(unittest.TestCase):
     def setUp(self):
