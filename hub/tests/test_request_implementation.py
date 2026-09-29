@@ -424,6 +424,107 @@ def test_claim_exclusivity_expiry_and_failure_release(client, org, specified):
     assert claim(client, specified, headers).status_code == 201
 
 
+def test_expired_recovery_status_history_and_idempotence(client, org, specified):
+    headers = token(org)
+    old = claim(client, specified, headers).json()
+    url = f"/api/v1/requests/{specified.pk}/implementation?attempt_id={old['attempt_id']}"
+    status = client.get(url, **headers).json()["claim"]
+    assert status["expired"] is False and status["owned_by_caller"] is True
+    identity = str(uuid.uuid4())
+    body = dict(
+        action="recover",
+        revision=specified.revision,
+        request_id=identity,
+        predecessor_attempt_id=old["attempt_id"],
+    )
+    assert post(client, specified, headers, **body).status_code == 409
+    with tenant_scope(org.id):
+        prior = RequestImplementation.objects.get(pk=old["attempt_id"])
+        prior.expires_at = timezone.now() - timedelta(seconds=1)
+        prior.save(update_fields=["expires_at"])
+        frozen = prior.specification.copy()
+    assert client.get(url, **headers).json()["claim"]["expired"] is True
+    recovered = post(client, specified, headers, **body)
+    assert recovered.status_code == 201
+    assert post(client, specified, headers, **body).status_code == 200
+    assert recovered.json()["attempt_id"] != old["attempt_id"]
+    assert (
+        post(client, specified, headers, **{**body, "request_id": str(uuid.uuid4())}).status_code
+        == 409
+    )
+    with tenant_scope(org.id):
+        prior.refresh_from_db()
+        assert prior.status == "expired" and prior.specification == frozen
+        assert prior.comment == "" and prior.data == {}
+    new = recovered.json()
+    done = post(
+        client,
+        specified,
+        headers,
+        action="complete",
+        attempt_id=new["attempt_id"],
+        completion=completion(specified, new),
+    )
+    assert done.status_code == 200
+    with tenant_scope(org.id):
+        successor = RequestImplementation.objects.get(pk=new["attempt_id"])
+        assert successor.data["recovery_of"] == old["attempt_id"]
+
+
+def test_claim_status_is_read_only_scoped_and_recovery_needs_write_scope(client, org, specified):
+    headers = token(org)
+    old = claim(client, specified, headers).json()
+    url = f"/api/v1/requests/{specified.pk}/implementation?attempt_id={old['attempt_id']}"
+    reader = token(org, scopes=("requests:read",))
+    result = client.get(url, **reader)
+    assert result.status_code == 200 and result.json()["claim"]["owned_by_caller"] is False
+    assert client.get(url, **token(org, repository="repo:other")).status_code == 404
+    assert (
+        client.get(url.replace(old["attempt_id"], str(uuid.uuid4())), **headers).status_code == 404
+    )
+    assert client.get(url.replace(old["attempt_id"], "invalid"), **headers).status_code == 400
+    response = post(
+        client,
+        specified,
+        reader,
+        action="recover",
+        revision=specified.revision,
+        request_id=str(uuid.uuid4()),
+        predecessor_attempt_id=old["attempt_id"],
+    )
+    assert response.status_code == 403
+    with tenant_scope(org.id):
+        assert RequestImplementation.objects.count() == 1
+        assert RequestImplementation.objects.get().status == "running"
+
+
+@pytest.mark.parametrize(
+    "change", ["cancelled", "failed", "succeeded", "different_actor", "different_revision"]
+)
+def test_expired_recovery_rejects_invalid_predecessor(client, org, specified, change):
+    headers = token(org)
+    old = claim(client, specified, headers).json()
+    with tenant_scope(org.id):
+        patch = {"expires_at": timezone.now() - timedelta(seconds=1)}
+        if change in {"cancelled", "failed", "succeeded"}:
+            patch["status"] = change
+        elif change == "different_revision":
+            patch["revision"] = 1
+        RequestImplementation.objects.filter(pk=old["attempt_id"]).update(**patch)
+    if change == "different_actor":
+        headers = token(org)
+    result = post(
+        client,
+        specified,
+        headers,
+        action="recover",
+        revision=specified.revision,
+        request_id=str(uuid.uuid4()),
+        predecessor_attempt_id=old["attempt_id"],
+    )
+    assert result.status_code in {404, 409}
+
+
 def test_write_entitlement_quota_and_erasure(client, org, specified, settings):
     headers = token(org)
     with tenant_scope(org.id):

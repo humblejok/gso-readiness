@@ -1,5 +1,28 @@
 # Implement accepted Hub requests
 
+## Recover an expired claim with a retained commit
+
+Update **both the Hub application and the project's kit**, restart the Hub application, and open a fresh VS Code chat. No database migration or additional token scope is needed. Use the same Hub token actor that acquired the expired claim.
+
+```text
+/implement-requests retry=<local-attempt-directory-ID>
+```
+
+The ID is the directory under `.github/graphify-review/output/request-implementations/`, not the request UUID or the `attempt_id` field inside `state.json`. An explicit path to that saved state also works. Do not edit state, extend timestamps in Django, delete branches/worktrees, push manually, or repeat ordinary plan/start to bypass a branch collision.
+
+Recovery requires a request still **Specified**, the same approved revision/specification, a Hub-confirmed expired claim, and a clean retained worktree at the recorded single non-merge implementation commit directly on the original base. The original checkout and remote target must still be at that base. The remote feature branch can be at the base (implementation not pushed) or at the recorded commit. Any existing PR, uncertain PR submission, pending completion, changed credentials/actor/scope, divergent branches or dirty source stops recovery. Installing a newer kit must not silently change these captured-base requirements; recovery never resets the original checkout to undo an update.
+
+The manager performs readiness, then uses the trusted review Python environment for:
+
+1. `implement_requests.py retry --repository <original-checkout> --state <expired-state>`: verifies ownership/expiry and writes a successor under `<expired-attempt>/retry/`, preserving old artifacts.
+2. `implement_requests.py start --repository <original-checkout> --state <successor-state>`: atomically acquires a new four-hour claim and resumes at `committed` with the existing SHA. Repeat this same state/client request ID after an uncertain response.
+3. `implement_requests.py prepare-verification --repository <original-checkout> --state <successor-state>`: prepares fresh committed verification. The manager directly invokes Request Implementation Verifier and packages its actual output with `verify_request.py build`. Historical reports, missing output and failed/unavailable required checks cannot authorize delivery.
+4. `implement_requests.py deliver --repository <original-checkout> --state <successor-state> --report <fresh-envelope> --summary-file <new-summary> [--handoff-file <new-proposal>]`: pushes the retained commit, creates/verifies the PR, then marks the request Implemented. It does not merge or Close it.
+
+No new commit or provisional verification is needed for this unchanged retained commit. Rerun required checks, use read-only Sonar assessment with honest limitations, and review handoff drafts against current related projects. If corrections are needed, stop for a separately agreed code-change workflow. Failure of the new active claim uses normal failure handling; pending completion must be synced unchanged. If the successor itself expires before delivery, retry its explicit state path.
+
+Read-only claim inspection is available at `GET /api/v1/requests/{request-UUID}/implementation?attempt_id={Hub-claim-UUID}`. The returned `claim` has status, `expires_at`, server-computed `expired`, revision, specification digest and `owned_by_caller`. It never renews the claim. POST action `recover` accepts `revision`, a new client `request_id`, `repository_external_id` and `predecessor_attempt_id`. It checks expiry, actor and approved scope atomically under the workspace lock; a competing active worker blocks it. The predecessor remains in history, and the successor stores `recovery_of`. Existing implementation scopes apply: `requests:read` and `requests:implement` (GET needs only read).
+
 `/implement-requests` implements user-approved bug/feature specifications using the selected VS Code model. It shares the findings workflow's Git/PR engine and quality policy, but has its own request claims, evidence and lifecycle. It does not resolve findings or recalculate review grades.
 
 ## Setup and usage

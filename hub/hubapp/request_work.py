@@ -94,6 +94,52 @@ def claim(pk, revision, request_id, actor, repository_external_id):
     return attempt, current, True
 
 
+def claim_status(item, attempt_id, actor):
+    """Read-only server-clock assessment; never acquire or renew a claim here."""
+    attempt = RequestImplementation.objects.get(pk=attempt_id, change_request=item)
+    return {
+        "attempt_id": str(attempt.pk),
+        "request_id": str(attempt.request_id),
+        "revision": attempt.revision,
+        "specification_digest": digest(attempt.specification),
+        "status": attempt.status,
+        "expires_at": attempt.expires_at,
+        "expired": attempt.expires_at <= timezone.now(),
+        "owned_by_caller": attempt.actor == str(actor),
+    }
+
+
+@transaction.atomic
+def recover_claim(pk, revision, request_id, predecessor_id, actor, repository_external_id):
+    item = locked(pk, repository_external_id)
+    predecessor = RequestImplementation.objects.get(
+        pk=predecessor_id, change_request=item, actor=str(actor)
+    )
+    current = context(item)
+    if (
+        predecessor.status not in {"running", "expired"}
+        or predecessor.expires_at > timezone.now()
+        or predecessor.revision != revision
+        or digest(predecessor.specification) != current["specification_digest"]
+        or str(predecessor.request_id) == str(request_id)
+    ):
+        raise RequestConflict(
+            "Recovery requires this actor's expired claim and unchanged approved specification."
+        )
+    existing = RequestImplementation.objects.filter(request_id=request_id).first()
+    if existing and existing.data.get("recovery_of") != str(predecessor.pk):
+        raise RequestConflict("Recovery identity is already bound to another attempt.")
+    attempt, current, created = claim(pk, revision, request_id, actor, repository_external_id)
+    if created:
+        attempt.data = {"recovery_of": str(predecessor.pk)}
+        extra = len(json.dumps(attempt.data).encode())
+        storage_budget(extra)
+        attempt.payload_bytes += extra
+        attempt.save(update_fields=["data", "payload_bytes"])
+        audit("request.implementation.recovered", actor, attempt.pk)
+    return attempt, current, created
+
+
 def completion_result(attempt):
     return {
         "attempt_id": str(attempt.pk),
@@ -193,6 +239,7 @@ def complete(pk, attempt_id, body, actor, repository_external_id):
         else ""
     )
     attempt.data = {
+        **({"recovery_of": attempt.data["recovery_of"]} if "recovery_of" in attempt.data else {}),
         "payload_hash": checksum,
         "completion": body,
         "result": {"status": item.status, "revision": item.revision},

@@ -104,7 +104,14 @@ class RequestImplementationAPI(APIView):
         permitted(request, "requests:read")
         item = get_object_or_404(visible(request), pk=pk)
         try:
-            return Response(request_work.context(item))
+            current = request_work.context(item)
+            if request.query_params.get("attempt_id"):
+                current["claim"] = request_work.claim_status(
+                    item, uuid.UUID(request.query_params["attempt_id"]), request.auth.pk
+                )
+            return Response(current)
+        except RequestImplementation.DoesNotExist:
+            return Response({"error": "Claim not found for this request."}, status=404)
         except (TargetedError, Repository.DoesNotExist):
             return Response(
                 {
@@ -112,6 +119,8 @@ class RequestImplementationAPI(APIView):
                 },
                 status=400,
             )
+        except ValueError:
+            return Response({"error": "Invalid attempt ID."}, status=400)
 
     def post(self, request, pk):
         permitted(request, "requests:read")
@@ -126,17 +135,27 @@ class RequestImplementationAPI(APIView):
                 or data.get("repository_external_id") != item.repository_external_id
             ):
                 raise change_requests.RequestConflict("Request project changed.")
-            if (
-                set(data) == {"action", "revision", "request_id", "repository_external_id"}
-                and data["action"] == "claim"
+            fields = {"action", "revision", "request_id", "repository_external_id"}
+            if (set(data) == fields and data["action"] == "claim") or (
+                set(data) == fields | {"predecessor_attempt_id"} and data["action"] == "recover"
             ):
-                attempt, current, created = request_work.claim(
-                    item.pk,
-                    data["revision"],
-                    data["request_id"],
-                    request.auth.pk,
-                    data["repository_external_id"],
-                )
+                if data["action"] == "recover":
+                    attempt, current, created = request_work.recover_claim(
+                        item.pk,
+                        data["revision"],
+                        data["request_id"],
+                        data["predecessor_attempt_id"],
+                        request.auth.pk,
+                        data["repository_external_id"],
+                    )
+                else:
+                    attempt, current, created = request_work.claim(
+                        item.pk,
+                        data["revision"],
+                        data["request_id"],
+                        request.auth.pk,
+                        data["repository_external_id"],
+                    )
                 return Response(
                     {**current, "attempt_id": str(attempt.pk), "expires_at": attempt.expires_at},
                     status=201 if created else 200,

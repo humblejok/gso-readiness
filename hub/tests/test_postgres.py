@@ -337,6 +337,31 @@ def test_postgres_request_implementation_isolation_and_concurrent_claim(org, own
         assert sorted(executor.map(lambda _: run(), range(2))) == ["claimed", "conflict"]
     with tenant_scope(org.id):
         attempt = RequestImplementation.objects.get()
+        attempt.expires_at = timezone.now() - timedelta(seconds=1)
+        attempt.save(update_fields=["expires_at"])
+
+    def recover():
+        close_old_connections()
+        try:
+            with tenant_scope(org.id):
+                try:
+                    request_work.recover_claim(
+                        item.pk, 3, uuid.uuid4(), attempt.pk, "worker", "repo:orders"
+                    )
+                    return "recovered"
+                except change_requests.RequestConflict:
+                    return "conflict"
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert sorted(executor.map(lambda _: recover(), range(2))) == ["conflict", "recovered"]
+    with tenant_scope(org.id):
+        attempt.refresh_from_db()
+        assert attempt.status == "expired"
+        assert RequestImplementation.objects.get(status="running").data["recovery_of"] == str(
+            attempt.pk
+        )
     with tenant_scope(other.id):
         with connection.cursor() as cursor:
             cursor.execute("SELECT COUNT(*) FROM hubapp_requestimplementation")

@@ -204,6 +204,7 @@
       "parameters": [{"in": "path", "name": "id", "required": true, "schema": {"type": "string", "format": "uuid"}}],
       "get": {
         "operationId": "getRequestImplementationContext",
+        "parameters": [{"in": "query", "name": "attempt_id", "required": false, "schema": {"type": "string", "format": "uuid"}, "description": "Read-only claim lookup for this request. Adds claim {attempt_id, request_id, revision, specification_digest, status, expires_at, expired, owned_by_caller}. Expiry uses server time; this never acquires or renews a claim."}],
         "description": "Requires requests:read. Returns current request UUID, revision, project, kind, description, analysis, status, display_id (REQ-UUID), specification_digest, clone_url, related_projects and upstream_handoff. Claim additionally enforces Specified status. Optional completion handoff saves a draft only; human closure in the Hub is required to publish.",
         "responses": {"200": {"description": "Approved-specification context"}, "400": {"description": "Missing complete specification or active project"}, "403": {"description": "Insufficient scope"}, "404": {"description": "Absent or inaccessible"}}
       },
@@ -212,6 +213,9 @@
         "description": "Requires requests:read and requests:implement. Four-hour exclusive claim of a human-accepted Specified revision. Request edits/cancellation invalidate claims. Success records evidence/PR and marks Implemented, not Closed or merged; failure keeps Specified. Exact completed retries are idempotent. Maximum completion size 256 KiB; 60 requests/minute/workspace.",
         "requestBody": {"required": true, "content": {"application/json": {"schema": {
           "oneOf": [
+            {"type": "object", "additionalProperties": false, "required": ["action", "revision", "request_id", "repository_external_id", "predecessor_attempt_id"], "properties": {
+              "action": {"const": "recover"}, "revision": {"type": "integer", "minimum": 1}, "request_id": {"type": "string", "format": "uuid"}, "repository_external_id": {"type": "string", "minLength": 1, "maxLength": 500}, "predecessor_attempt_id": {"type": "string", "format": "uuid"}
+            }, "description": "Acquire an idempotent successor to this actor's expired request claim, with unchanged accepted revision/specification. Active/cancelled/completed/foreign claims or a competing worker block recovery. Existing expired history is preserved."},
             {"type": "object", "additionalProperties": false, "required": ["action", "revision", "request_id", "repository_external_id"], "properties": {
               "action": {"const": "claim"}, "revision": {"type": "integer", "minimum": 1}, "request_id": {"type": "string", "format": "uuid"}, "repository_external_id": {"type": "string", "minLength": 1, "maxLength": 500}
             }},

@@ -131,7 +131,7 @@ class RecoveryTests(unittest.TestCase):
         for change in ({"stage": "completion_pending"},
                        {"pr_submission_started": True}, {"pull_request": "https://example.invalid/pr/1"},
                        {"kind": "request"}):
-            with self.subTest(change=change), self.assertRaisesRegex(work.WorkError, "confirmed failed"):
+            with self.subTest(change=change), self.assertRaisesRegex(work.WorkError, "confirmed failed|Request recovery requires"):
                 work.retry(path, {**state, **change})
 
     def test_committed_recovery_delivers_same_commit_only_after_fresh_verification(self):

@@ -164,6 +164,13 @@ def recovery_checks(path, state):
     if (retained_commit != completion.get("commit_sha", "")
             or (retained_commit and not re.fullmatch(r"[a-f0-9]{40,64}", retained_commit))):
         raise WorkError("Retained commit must match the acknowledged failed completion exactly.")
+    retained_worktree_checks(state, retained_commit)
+    return completion
+
+
+def retained_worktree_checks(state, retained_commit):
+    """Shared read-only retained branch ownership checks for findings and requests."""
+    state = copy.deepcopy(state)
     root, tree = Path(state["root"]), Path(state["worktree"])
     if (run(root, "git", "status", "--porcelain")
             or run(root, "git", "symbolic-ref", "--quiet", "--short", "HEAD") != state["base_branch"]
@@ -191,7 +198,6 @@ def recovery_checks(path, state):
         if remote_sha(root, state["remote"], branch) not in allowed:
             raise WorkError("Remote base or retained feature branch changed or is missing. Recovery will not overwrite or recreate it.")
     provider.require_no_pr(state)
-    return completion
 
 
 def recovery_context(state):
@@ -210,6 +216,9 @@ def recovery_context(state):
 
 def retry(path, state):
     """Create one successor without editing historical state, reports or completion."""
+    if state.get("kind") == "request":
+        from implement_requests import retry as retry_request
+        return retry_request(path, state)
     directory = path.parent / "retry"
     successor = directory / "state.json"
     if successor.exists():
@@ -273,6 +282,9 @@ def start_recovery(path, state):
 
 
 def prepare_verification(path, state):
+    if state.get("kind") == "request":
+        from implement_requests import prepare_verification as prepare_request
+        return prepare_request(path, state)
     if state.get("kind", "finding") != "finding" or state["stage"] not in {"started", "committed"}:
         raise WorkError("Prepare verification only for a started or committed finding attempt.")
     phase = "provisional" if state["stage"] == "started" else "committed"
@@ -285,6 +297,9 @@ def prepare_verification(path, state):
 
 
 def start(path, state):
+    if state.get("kind") == "request" and state.get("recovery"):
+        from implement_requests import start_recovery as start_request_recovery
+        return start_request_recovery(path, state)
     if state.get("recovery"):
         return start_recovery(path, state)
     root, tree = Path(state["root"]), Path(state["worktree"])
@@ -445,7 +460,7 @@ def deliver(path, state, args):
 def main(argv=None, *, kind="finding"):
     parser = argparse.ArgumentParser(description=__doc__)
     actions = ("plan", "start", "commit", "deliver", "fail", "sync")
-    parser.add_argument("action", choices=actions + (("retry", "prepare-verification") if kind == "finding" else ()))
+    parser.add_argument("action", choices=actions + ("retry", "prepare-verification"))
     parser.add_argument("--repository", default=".")
     if kind == "request":
         parser.add_argument("--request", help="Hub request UUID displayed on its details page")
