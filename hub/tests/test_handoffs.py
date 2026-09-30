@@ -252,7 +252,13 @@ def test_ui_edit_select_close_and_downstream_visibility(client, org, owner, impl
     with tenant_scope(org.pk):
         implemented.refresh_from_db()
     closing = {"action": "transition", "revision": implemented.revision, "status": "closed"}
-    assert client.post(url, closing).status_code == 200  # checkbox missing
+    with mock.patch("hubapp.diagnostics.logger.log") as log:
+        rejected = client.post(url, closing)  # checkbox missing
+    assert rejected.status_code == 200
+    log.assert_called_once()
+    event = json.loads(log.call_args.args[1])
+    assert event["operation"] == "request.transition"
+    assert event["diagnostic_id"] == rejected["X-Hub-Request-ID"]
     assert client.post(url, {**closing, "handoff_reviewed": "on"}).status_code == 302
     assert client.post(url, {**closing, "handoff_reviewed": "on"}).status_code == 302
     with tenant_scope(org.pk):

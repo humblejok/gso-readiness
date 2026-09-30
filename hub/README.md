@@ -213,6 +213,69 @@ For production:
 
 Supply concrete TLS/SMTP/provider/source configuration before claiming production readiness. Startup refuses obvious unsafe core settings; readiness also checks migrations and the database role. The template does not obtain certificates, publish to a cloud provider or buy services.
 
+### Diagnosing rejected implementation / handoff requests (HTTP 400)
+
+The Hub emits one-line JSON rejection diagnostics to **stderr**, collected by the web
+container's logs. They are enabled at WARNING level in production; do **not** enable
+`DEBUG`, HTTP body tracing or token-bearing verbose output. Redeploy the updated Hub
+image and update the review kit in the calling checkout to obtain these diagnostics;
+this logging change needs no database migration. Historical validation reasons cannot
+be reconstructed if the older Hub did not record them.
+
+Every response passing through Django receives an `X-Hub-Request-ID` header. The
+updated implementation client includes this UUID in its error message as **Hub
+diagnostic ID**. In the browser, inspect the failed POST's response headers in Network
+tools (a rejected form save can return HTTP 200). This is a per-HTTP-request ID, not
+the implementation attempt ID. The server generates it independently of inbound headers.
+
+For Kubernetes, substitute your namespace, Hub **web** pod and container names:
+
+```sh
+kubectl get pods -n YOUR_NAMESPACE
+kubectl logs -n YOUR_NAMESPACE YOUR_HUB_POD -c YOUR_WEB_CONTAINER --since=1h --timestamps
+# If the container restarted, inspect its previous instance too:
+kubectl logs -n YOUR_NAMESPACE YOUR_HUB_POD -c YOUR_WEB_CONTAINER --previous --timestamps
+```
+
+Filter the first logs command with `| Select-String 'DIAGNOSTIC_UUID'` in PowerShell,
+or `| rg 'DIAGNOSTIC_UUID'` in a shell with ripgrep. Inspect every web replica if you
+do not know which handled the call. `--previous` only retrieves the previous container
+instance when available, not deleted-pod history. Retain logs in your organization's
+central log service for longer investigations. See the official
+[kubectl logs reference](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_logs/).
+For local Compose, use `docker compose logs --since=1h web` from `hub/`.
+
+Look for `event: hub.request_rejected` and the matching `diagnostic_id`. Events include
+HTTP status, the route **pattern** (not the actual credential-bearing URL), operation,
+and, where known, request/attempt UUIDs. Recognized validation failures include a fixed
+`reason` and explanation, for example:
+
+| Reason | Check |
+| --- | --- |
+| `handoff_must_be_proposed` | Agent submissions must use `availability: proposed`; only human review attests deployment availability. |
+| `handoff_target_not_configured` | Every target must be an active configured consumer of the source project in this workspace. |
+| `handoff_*_missing_or_too_long` | Supply each required text field within its limit, even for no downstream impact. |
+| `handoff_fields` / `handoff_target_fields` | Exact proposal/target schema; missing or extra keys are rejected. |
+| `reference_pr_repository` / `handoff_reference_mismatch` | PR/project or verified implementation reference does not match. |
+| `verification_contract` / `verification_artifact_mismatch` | The completion needs the validated verification envelope, not a command receipt or raw verifier result. |
+| `completion_evidence_mismatch` | Recheck accepted specification, source commit, clean feature branch and PR bindings. |
+| `claim_stale` | Claim expired, was cancelled, or no longer matches the accepted specification (HTTP 409). |
+| `validation_rejected` / `http_error` | Unclassified validation, form, authentication or HTTP rejection; inspect local artifacts and form errors without publishing their contents into logs. |
+
+These diagnostics deliberately exclude request/response bodies, arbitrary exception
+messages, authorization/cookies, query strings, code and handoff/specification prose.
+Unknown failures stay generic rather than risk disclosing secrets. Existing infrastructure
+and Django logs have separate policies: keep their access restricted and redact before sharing.
+If no diagnostic header/event exists, the rejection may predate this release or originate
+at the ingress/proxy rather than Django; ask its operator to correlate by time and status.
+
+An agent completion **stores a proposed handoff**; actual downstream publication occurs
+only after a human closes the request and approves its handoffs. Do not recreate a PR,
+overwrite a retained branch, or rewrite immutable completion evidence to diagnose a 400.
+Preserve the attempt, saved payload and history. For a pending completion use the supported
+same-payload `sync` path once the rejection's cause is understood; invalid saved evidence
+requires a supported repair, not blindly rerunning the full implementation.
+
 ### Backups, export and erasure
 
 Export from the dashboard remains available to owners/admins after subscription expiry and contains the source import envelopes. The current export is not a complete administrative backup: memberships, credentials, billing and delivery state need a database backup. Snapshot PostgreSQL before releases; back up encryption keys through a separate secured process. Restore into an isolated instance, disable outbound integrations/billing jobs, verify tenant counts and associations, then conduct a controlled cutover. Never restore over a running production database as a test.

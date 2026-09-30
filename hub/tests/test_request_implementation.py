@@ -1,6 +1,8 @@
+import json
 import uuid
 from datetime import timedelta
 from io import StringIO
+from unittest import mock
 
 import pytest
 from django.core.exceptions import ValidationError
@@ -126,6 +128,63 @@ def completion(item, context, outcome="succeeded"):
         "commit_sha": "a" * 40 if outcome == "succeeded" else "",
         "base_branch": "main",
     }
+
+
+@pytest.mark.parametrize(
+    "case,reason",
+    [
+        ("availability", "handoff_must_be_proposed"),
+        ("target", "handoff_target_not_configured"),
+        ("summary", "handoff_summary_missing_or_too_long"),
+        ("report", "verification_contract"),
+    ],
+)
+def test_rejected_completion_has_safe_correlated_diagnostic(
+    client, org, specified, no_handoff, case, reason
+):
+    headers = token(org)
+    context = claim(client, specified, headers).json()
+    proposal = {**no_handoff, "availability": "proposed", "summary": "SECRET-HANDOFF"}
+    body = {**completion(specified, context), "handoff": proposal, "comment": "SECRET-COMMENT"}
+    if case == "availability":
+        proposal["availability"] = "production_available"
+    elif case == "target":
+        proposal["targets"] = [
+            {
+                "repository_external_id": "SECRET-TARGET",
+                "requirements": "SECRET-REQUIREMENTS",
+                "acceptance_criteria": "SECRET-ACCEPTANCE",
+            }
+        ]
+    elif case == "summary":
+        proposal["summary"] = ""
+    else:
+        body["report"] = {"SECRET-FIELD": "SECRET-REPORT"}
+    with mock.patch("hubapp.diagnostics.logger.log") as log:
+        response = post(
+            client,
+            specified,
+            headers,
+            action="complete",
+            attempt_id=context["attempt_id"],
+            completion=body,
+        )
+    assert response.status_code == 400
+    log.assert_called_once()
+    raw = log.call_args.args[1]
+    event = json.loads(raw)
+    assert event["diagnostic_id"] == response["X-Hub-Request-ID"]
+    assert str(uuid.UUID(event["diagnostic_id"])) == event["diagnostic_id"]
+    assert event["reason"] == reason
+    assert event["operation"] == "request.implementation.complete"
+    assert event["attempt_id"] == context["attempt_id"]
+    assert event["pk"] == str(specified.pk)
+    assert "SECRET" not in raw
+    assert headers["HTTP_AUTHORIZATION"] not in raw
+    with tenant_scope(org.pk):
+        assert RequestImplementation.objects.get(pk=context["attempt_id"]).status == "running"
+        specified.refresh_from_db()
+        assert specified.status == "specified"
 
 
 def test_success_history_export_and_exact_retry(client, org, owner, specified, no_handoff):

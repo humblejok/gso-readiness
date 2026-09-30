@@ -68,6 +68,22 @@ class HubFindingClientTests(unittest.TestCase):
             with self.assertRaises(PublishError):
                 hub.context(self.root, identifier)
 
+    def test_http_error_exposes_only_valid_diagnostic_uuid(self):
+        identity = str(uuid.uuid4())
+        for value in (identity, "SECRET\nforged-log-entry", "", None):
+            error = urllib.error.HTTPError(self.url, 400, "SECRET", {"X-Hub-Request-ID": value}, io.BytesIO(b"SECRET-BODY"))
+            opener = mock.Mock()
+            opener.open.side_effect = error
+            with self.subTest(value=value), mock.patch.object(hub, "token_for", return_value="SECRET-TOKEN"), mock.patch.object(hub, "opener_for", return_value=opener):
+                with self.assertRaises(PublishError) as raised:
+                    hub.request_json(self.root, "POST", "/api/v1/requests", {})
+            message = str(raised.exception)
+            self.assertNotIn("SECRET", message)
+            self.assertEqual("Hub diagnostic ID:" in message, value == identity)
+            if value == identity:
+                self.assertIn(identity, message)
+            self.assertTrue(error.closed)
+
 
 if __name__ == "__main__":
     unittest.main()

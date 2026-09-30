@@ -8,6 +8,7 @@ from django.shortcuts import redirect
 from django.views.decorators.http import require_http_methods
 
 from . import change_requests, forms, handoffs
+from .diagnostics import rejection
 from .models import (
     ChangeRequest,
     ChangeRequestActivity,
@@ -167,10 +168,13 @@ def detail(request, organization_id, pk):
             except ChangeRequest.DoesNotExist as error:
                 raise Http404 from error
             except ValidationError as error:
+                rejection(request, "request." + action, error)
                 form.add_error(None, error.messages)
             else:
                 messages.success(request, "Request saved.")
                 return redirect(workspace_url(request, f"requests/{pk}/"))
+        else:
+            rejection(request, "request." + action)
     return page(
         request,
         "request_detail.html",

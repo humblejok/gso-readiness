@@ -35,6 +35,11 @@ def request_json(root, method, path, data=None, expected_hub=None):
         return result
     except urllib.error.HTTPError as exc:
         status = exc.code
+        diagnostic = ""
+        try:
+            diagnostic = str(uuid.UUID(exc.headers.get("X-Hub-Request-ID", "")))
+        except (ValueError, TypeError, AttributeError):
+            pass
         exc.close()
         messages = {401: "Hub token expired/invalid: use the terminal login helper.",
                     403: "Hub denied access: check token scopes, repository restriction, workspace status and subscription.",
@@ -42,7 +47,10 @@ def request_json(root, method, path, data=None, expected_hub=None):
                     409: "Hub work state changed or conflicts with this request. Refresh it; do not override another worker, cancellation or newer review.",
                     400: "Hub rejected the request/targeted contract. Check the saved artifacts and current baseline.",
                     429: "Hub rate limit reached. Wait before retrying the identical request."}
-        raise PublishError(messages.get(status, "Hub request failed or redirected. Redirects are blocked. A write may have completed; retry only the identical saved request.")) from None
+        message = messages.get(status, "Hub request failed or redirected. Redirects are blocked. A write may have completed; retry only the identical saved request.")
+        if diagnostic:
+            message += f" Hub diagnostic ID: {diagnostic} (HTTP {status}); ask the Hub operator to find this ID in the pod logs."
+        raise PublishError(message) from None
     except (OSError, ValueError, urllib.error.URLError, http.client.HTTPException) as exc:
         raise PublishError("Hub connection/TLS/response failure. Check proxy/CA settings. A write may have completed; retain its request ID and retry unchanged.") from exc
 

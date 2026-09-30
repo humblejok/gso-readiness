@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 
 from . import change_requests, handoffs, request_work
 from .api import paginated, permitted, repository_filter
+from .diagnostics import rejection
 from .git_host_contract import HostError
 from .models import ChangeRequest, Repository, RequestImplementation
 from .services import rate_limit
@@ -128,6 +129,8 @@ class RequestImplementationAPI(APIView):
         item = get_object_or_404(visible(request), pk=pk)
         if not rate_limit("request-implementation:" + str(request.auth.organization_id), 60):
             raise Throttled()
+        operation = "request.implementation.input"
+        attempt_id = None
         try:
             data = request.data
             if (
@@ -135,6 +138,9 @@ class RequestImplementationAPI(APIView):
                 or data.get("repository_external_id") != item.repository_external_id
             ):
                 raise change_requests.RequestConflict("Request project changed.")
+            if data.get("action") in ("claim", "recover", "complete"):
+                operation = "request.implementation." + data["action"]
+            attempt_id = data.get("attempt_id")
             fields = {"action", "revision", "request_id", "repository_external_id"}
             if (set(data) == fields and data["action"] == "claim") or (
                 set(data) == fields | {"predecessor_attempt_id"} and data["action"] == "recover"
@@ -175,6 +181,7 @@ class RequestImplementationAPI(APIView):
                 )
             raise ValidationError("Unknown request implementation action.")
         except change_requests.RequestConflict as error:
+            rejection(request, operation, error, attempt_id)
             return Response({"errors": error.messages}, status=409)
         except DjangoPermissionDenied as error:
             raise PermissionDenied(str(error)) from error
@@ -190,5 +197,6 @@ class RequestImplementationAPI(APIView):
             TypeError,
             KeyError,
             AttributeError,
-        ):
+        ) as error:
+            rejection(request, operation, error, attempt_id)
             return Response({"error": "Invalid request implementation evidence."}, status=400)

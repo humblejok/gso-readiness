@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     "hubapp",
 ]
 MIDDLEWARE = [
+    "hubapp.diagnostics.DiagnosticsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -192,8 +193,18 @@ LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "filters": {"credential_paths": {"()": "hubapp.logging.CredentialPathFilter"}},
-    "handlers": {"console": {"class": "logging.StreamHandler", "filters": ["credential_paths"]}},
+    "formatters": {"diagnostics_json": {"format": "%(message)s"}},
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "filters": ["credential_paths"]},
+        # Already sanitized structured fields; a free-text path filter would corrupt JSON.
+        "diagnostics_console": {"class": "logging.StreamHandler", "formatter": "diagnostics_json"},
+    },
     "loggers": {
+        "hub.diagnostics": {
+            "handlers": ["diagnostics_console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
         "django": {"handlers": ["console"], "level": "WARNING", "propagate": False},
         "django.server": {"handlers": ["console"], "level": "INFO", "propagate": False},
     },
