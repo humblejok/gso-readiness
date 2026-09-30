@@ -3,12 +3,13 @@ import uuid
 from io import StringIO
 from unittest import mock
 
+from django import forms
 from django.core.exceptions import ValidationError
 from django.http import HttpResponse
 from django.test import RequestFactory
 from django.urls import resolve
 
-from hubapp.diagnostics import DiagnosticsMiddleware, logger, rejection
+from hubapp.diagnostics import DiagnosticsMiddleware, form_rejection, logger, rejection
 
 
 def test_unknown_errors_and_credential_paths_are_not_logged():
@@ -76,3 +77,40 @@ def test_configured_handler_preserves_json_for_credential_route_patterns():
     event = json.loads(stream.getvalue())
     assert event["diagnostic_id"] == response["X-Hub-Request-ID"]
     assert "SECRET" not in stream.getvalue()
+
+
+def test_form_diagnostics_do_not_log_messages_parameters_values_or_unknown_codes():
+    class ExampleForm(forms.Form):
+        availability = forms.ChoiceField(choices=[("proposed", "Proposed")])
+        summary = forms.CharField(max_length=4)
+
+    form = ExampleForm({"availability": "SECRET-CHOICE", "summary": "SECRET-TEXT"})
+    assert not form.is_valid()
+    form.add_error(
+        None,
+        ValidationError(
+            "SECRET-MESSAGE %(value)s", code="SECRET-CODE", params={"value": "SECRET-PARAM"}
+        ),
+    )
+    form.errors["SECRET-FIELD"] = form.error_class(
+        [ValidationError("SECRET-MESSAGE", code="required")]
+    )
+    request = RequestFactory().post("/", {"token": "SECRET-TOKEN"})
+    form_rejection(request, "request.edit_handoff", form)
+    raw = json.dumps(request.hub_rejection)
+    assert "SECRET" not in raw
+    rows = request.hub_rejection["validation_errors"]
+    assert any(row["field"] == "availability" and row["code"] == "invalid_choice" for row in rows)
+    assert any(row["field"] == "summary" and row["max_length"] == 4 for row in rows)
+    assert any(row["code"] == "invalid_unspecified" for row in rows)
+    assert any(row["field"] == "unrecognized_field" for row in rows)
+
+
+def test_form_diagnostics_are_bounded():
+    form = forms.Form({})
+    for _ in range(205):
+        form.add_error(None, ValidationError("SECRET", code="invalid"))
+    request = RequestFactory().post("/")
+    form_rejection(request, "request.edit_handoff", form)
+    assert len(request.hub_rejection["validation_errors"]) == 200
+    assert request.hub_rejection["errors_truncated"] is True

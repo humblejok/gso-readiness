@@ -259,6 +259,12 @@ def test_ui_edit_select_close_and_downstream_visibility(client, org, owner, impl
     event = json.loads(log.call_args.args[1])
     assert event["operation"] == "request.transition"
     assert event["diagnostic_id"] == rejected["X-Hub-Request-ID"]
+    assert event["stage"] == "form_validation"
+    assert event["reason"] == "form_invalid"
+    assert any(
+        row["field"] == "handoff_reviewed" and row["code"] == "required"
+        for row in event["validation_errors"]
+    )
     assert client.post(url, {**closing, "handoff_reviewed": "on"}).status_code == 302
     assert client.post(url, {**closing, "handoff_reviewed": "on"}).status_code == 302
     with tenant_scope(org.pk):
@@ -280,6 +286,120 @@ def test_ui_edit_select_close_and_downstream_visibility(client, org, owner, impl
     exported = json.loads(b"".join(client.get(f"/w/{org.pk}/export/").streaming_content))
     assert isinstance(exported["request_handoffs"][0]["snapshot"], dict)
     assert len(exported["project_relationships"]) == 2
+
+
+@pytest.mark.parametrize(
+    "case,expected",
+    [
+        (
+            "missing_text",
+            {
+                ("request", "contract", "required"),
+                ("request", "compatibility", "required"),
+                ("request", "availability_details", "required"),
+            },
+        ),
+        ("length", {("request", "summary", "max_length")}),
+        ("url", {("request", "pull_request", "invalid")}),
+        ("revision", {("request", "revision", "invalid")}),
+        (
+            "targets",
+            {
+                ("request", "contract", "required"),
+                ("targets[0]", "repository_external_id", "invalid_choice"),
+            },
+        ),
+        (
+            "management",
+            {
+                ("targets.management", "TOTAL_FORMS", "required"),
+                ("targets", "__all__", "missing_management_form"),
+            },
+        ),
+        ("too_many", {("targets", "__all__", "too_many_forms")}),
+    ],
+)
+def test_ui_handoff_logs_all_invalid_fields_without_values(
+    client, org, owner, implemented, proposal, case, expected
+):
+    client.force_login(owner)
+    data = {
+        key: value for key, value in proposal.items() if key not in {"targets", "implementation"}
+    }
+    data.update(
+        action="edit_handoff",
+        revision=implemented.revision,
+        commit_sha="",
+        pull_request="",
+        **{"targets-TOTAL_FORMS": 0, "targets-INITIAL_FORMS": 0},
+    )
+    if case == "missing_text":
+        data.update(contract="", compatibility="", availability_details="")
+    elif case == "length":
+        data["summary"] = "SECRET" * 700
+    elif case == "url":
+        data["pull_request"] = "SECRET-INVALID-URL"
+    elif case == "revision":
+        data["revision"] = "SECRET-INVALID-REVISION"
+    elif case == "targets":
+        data.update(
+            contract="",
+            **{"targets-TOTAL_FORMS": 1, "targets-0-repository_external_id": "SECRET-TARGET"},
+        )
+    elif case == "management":
+        del data["targets-TOTAL_FORMS"]
+    else:
+        data["targets-TOTAL_FORMS"] = 100000
+    with mock.patch("hubapp.diagnostics.logger.log") as log:
+        response = client.post(f"/w/{org.pk}/requests/{implemented.pk}/", data)
+    assert response.status_code == 200
+    log.assert_called_once()
+    raw = log.call_args.args[1]
+    event = json.loads(raw)
+    assert event["reason"] == "form_invalid"
+    assert event["stage"] == "form_validation"
+    assert event["diagnostic_id"] == response["X-Hub-Request-ID"]
+    assert expected <= {
+        (row["form"], row["field"], row["code"]) for row in event["validation_errors"]
+    }
+    assert "SECRET" not in raw
+    assert proposal["contract"] not in raw
+    if case == "length":
+        assert event["validation_errors"][0]["max_length"] == 4000
+    with tenant_scope(org.pk):
+        implemented.refresh_from_db()
+        assert implemented.handoff == {}
+        assert implemented.status == "implemented"
+
+
+@pytest.mark.parametrize(
+    "case,reason",
+    [
+        ("unsaved", "handoff_review_not_saved"),
+        ("stale", "request_revision_stale"),
+        ("stage", "request_invalid_transition"),
+    ],
+)
+def test_ui_closure_logs_actionable_workflow_reason(client, org, owner, implemented, case, reason):
+    client.force_login(owner)
+    data = dict(
+        action="transition", revision=implemented.revision, status="closed", handoff_reviewed="on"
+    )
+    if case == "stale":
+        data["revision"] += 1
+    elif case == "stage":
+        data["status"] = "specified"
+    with mock.patch("hubapp.diagnostics.logger.log") as log:
+        response = client.post(f"/w/{org.pk}/requests/{implemented.pk}/", data)
+    assert response.status_code == 200
+    log.assert_called_once()
+    event = json.loads(log.call_args.args[1])
+    assert event["reason"] == reason
+    assert event["stage"] == "workflow_validation"
+    assert event["explanation"]
+    with tenant_scope(org.pk):
+        implemented.refresh_from_db()
+        assert implemented.status == "implemented"
 
 
 def test_relationship_permissions_tenant_scope_csrf_and_token_sharing(

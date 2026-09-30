@@ -8,7 +8,7 @@ from django.shortcuts import redirect
 from django.views.decorators.http import require_http_methods
 
 from . import change_requests, forms, handoffs
-from .diagnostics import rejection
+from .diagnostics import form_rejection, rejection
 from .models import (
     ChangeRequest,
     ChangeRequestActivity,
@@ -145,7 +145,11 @@ def detail(request, organization_id, pk):
             )
         else:
             raise PermissionDenied("Unknown request action.")
-        if form.is_valid() and (action != "edit_handoff" or target_forms.is_valid()):
+        # Validate both even if the primary form fails: diagnostics must expose all
+        # rejected fields, not just the first form encountered by short-circuiting.
+        form_valid = form.is_valid()
+        targets_valid = target_forms.is_valid() if action == "edit_handoff" else True
+        if form_valid and targets_valid:
             data = dict(form.cleaned_data)
             if action == "edit_analysis":
                 data = {"revision": data.pop("revision"), "analysis": data}
@@ -168,13 +172,18 @@ def detail(request, organization_id, pk):
             except ChangeRequest.DoesNotExist as error:
                 raise Http404 from error
             except ValidationError as error:
-                rejection(request, "request." + action, error)
+                rejection(request, "request." + action, error, stage="workflow_validation")
                 form.add_error(None, error.messages)
             else:
                 messages.success(request, "Request saved.")
                 return redirect(workspace_url(request, f"requests/{pk}/"))
         else:
-            rejection(request, "request." + action)
+            form_rejection(
+                request,
+                "request." + action,
+                form,
+                target_forms if action == "edit_handoff" else None,
+            )
     return page(
         request,
         "request_detail.html",

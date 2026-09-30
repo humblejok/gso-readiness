@@ -47,6 +47,24 @@ SAFE_REASONS = {
     "Use a GitHub or Azure DevOps HTTPS pull request URL.": "reference_pr_format",
     "Pull request URL does not match its hosting provider.": "reference_pr_provider",
     "Pull request belongs to a different repository than the configured clone URL.": "reference_pr_repository",
+    "This request changed since you opened it. Reload the page and review the latest version before saving.": "request_revision_stale",
+    "Save the handoff review first, including a reason when no targets are affected.": "handoff_review_not_saved",
+    "Confirm human validation and review of downstream impacts before closing.": "handoff_confirmation_required",
+    "Review handoffs after implementation, before closing.": "handoff_wrong_workflow_stage",
+    "Move to the next workflow stage; stages cannot be skipped.": "request_invalid_transition",
+    "Submit an analysis, then explicitly accept it after review.": "request_analysis_acceptance_required",
+    "Only an analyzed request can be accepted.": "request_not_analyzed",
+    "Only analyzed or specified requests have an editable analysis.": "request_analysis_not_editable",
+    "Only the request creator can cancel it.": "request_cancel_creator_only",
+    "Implemented or closed requests cannot be cancelled.": "request_not_cancellable",
+    "Closed requests are read-only.": "request_closed",
+    "Cancelled requests are read-only.": "request_cancelled",
+    "Implemented requests can only be closed.": "request_already_implemented",
+    "A published handoff stays assigned to its approved target project.": "handoff_target_immutable",
+    "Select an active project in this workspace.": "request_project_inactive",
+    "Provide a description.": "request_description_required",
+    "Provide the complete structured implementation analysis.": "request_analysis_incomplete",
+    "Select backend, frontend or fullstack project scope.": "request_project_scope_invalid",
 }
 for field in ("summary", "contract", "compatibility", "availability_details"):
     SAFE_REASONS[f"Provide bounded {field}; explain explicitly when none applies."] = (
@@ -54,10 +72,10 @@ for field in ("summary", "contract", "compatibility", "availability_details"):
     )
 
 
-def rejection(request, operation, error=None, attempt_id=None):
+def rejection(request, operation, error=None, attempt_id=None, *, stage="validation"):
     """Mark a handled rejection; middleware emits exactly one diagnostic event."""
     request = getattr(request, "_request", request)  # DRF wraps Django's request.
-    detail = {"operation": operation, "reason": "validation_rejected"}
+    detail = {"operation": operation, "stage": stage, "reason": "validation_rejected"}
     if error is not None:
         from .request_contract import RequestArtifactError
         from .targeted_contract import TargetedError
@@ -76,6 +94,104 @@ def rejection(request, operation, error=None, attempt_id=None):
     except ValueError:
         pass
     request.hub_rejection = detail
+
+
+# Never log Django's interpolated messages or error.params: invalid choices/URLs can
+# contain submitted text. Both field names and error codes must be known constants.
+FORM_FIELDS = frozenset(
+    {
+        "revision",
+        "status",
+        "handoff_reviewed",
+        "summary",
+        "contract",
+        "compatibility",
+        "availability",
+        "availability_details",
+        "commit_sha",
+        "pull_request",
+        "repository_external_id",
+        "selected",
+        "requirements",
+        "acceptance_criteria",
+        "kind",
+        "description",
+        "project_kind",
+        "specification",
+        "new_interfaces",
+        "changed_interfaces",
+        "breaking_changes",
+        "TOTAL_FORMS",
+        "INITIAL_FORMS",
+        "MIN_NUM_FORMS",
+        "MAX_NUM_FORMS",
+        "__all__",
+    }
+)
+FORM_CODES = {
+    "required": "This field is empty or missing; enter a value (or check the required confirmation).",
+    "invalid": "The value has an invalid format; check the field type, for example URL or integer.",
+    "invalid_choice": "The selected option is not allowed; reload the form and select an available option.",
+    "max_length": "The value exceeds this field's maximum character count.",
+    "min_length": "The value is shorter than this field's minimum character count.",
+    "min_value": "The number is below the permitted minimum.",
+    "max_value": "The number exceeds the permitted maximum.",
+    "missing_management_form": "Target form bookkeeping is missing or invalid; reload the page before resubmitting.",
+    "too_many_forms": "Too many consumer forms were submitted; reload and reduce the selection.",
+    "too_few_forms": "Too few consumer forms were submitted; reload the page.",
+    "null_characters_not_allowed": "Remove null characters from this field.",
+}
+
+
+def form_rejection(request, operation, form, formset=None):
+    """Record every invalid field, including hidden fields and target management data."""
+    rejection(request, operation, stage="form_validation")
+    request = getattr(request, "_request", request)
+    detail = request.hub_rejection
+    detail.update(
+        reason="form_invalid",
+        explanation="Nothing saved. Correct the listed fields and submit again.",
+    )
+    rows = []
+    truncated = False
+
+    def collect(errors, location, fields=None):
+        nonlocal truncated
+        for name, errors_for_field in errors.items():
+            safe_name = name if name in FORM_FIELDS else "unrecognized_field"
+            for error in errors_for_field:
+                if len(rows) >= 200:
+                    truncated = True
+                    return
+                code = error.code if error.code in FORM_CODES else "invalid_unspecified"
+                row = {
+                    "form": location,
+                    "field": safe_name,
+                    "code": code,
+                    "explanation": FORM_CODES.get(
+                        code, "Validation failed; inspect the error beside this field."
+                    ),
+                }
+                field = (fields or {}).get(name)
+                for limit in ("max_length", "min_length", "max_value", "min_value"):
+                    value = getattr(field, limit, None)
+                    if type(value) is int:
+                        row[limit] = value
+                rows.append(row)
+
+    collect(form.errors.as_data(), "request", form.fields)
+    if formset is not None:
+        collect(
+            formset.management_form.errors.as_data(),
+            "targets.management",
+            formset.management_form.fields,
+        )
+        collect({"__all__": formset.non_form_errors().as_data()}, "targets")
+        # The request formset is independently bounded by absolute_max=40.
+        for index, target in enumerate(formset.forms[:40]):
+            collect(target.errors.as_data(), f"targets[{index}]", target.fields)
+    detail["validation_errors"] = rows
+    detail["errors_truncated"] = truncated
 
 
 class DiagnosticsMiddleware:

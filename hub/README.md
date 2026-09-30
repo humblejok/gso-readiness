@@ -213,12 +213,13 @@ For production:
 
 Supply concrete TLS/SMTP/provider/source configuration before claiming production readiness. Startup refuses obvious unsafe core settings; readiness also checks migrations and the database role. The template does not obtain certificates, publish to a cloud provider or buy services.
 
-### Diagnosing rejected implementation / handoff requests (HTTP 400)
+### Diagnosing rejected UI saves, closures and implementation requests
 
 The Hub emits one-line JSON rejection diagnostics to **stderr**, collected by the web
 container's logs. They are enabled at WARNING level in production; do **not** enable
 `DEBUG`, HTTP body tracing or token-bearing verbose output. Redeploy the updated Hub
-image and update the review kit in the calling checkout to obtain these diagnostics;
+image to obtain these diagnostics for browser actions. Only agent-side diagnostic ID
+display also requires updating the review kit in the calling checkout;
 this logging change needs no database migration. Historical validation reasons cannot
 be reconstructed if the older Hub did not record them.
 
@@ -245,6 +246,57 @@ central log service for longer investigations. See the official
 [kubectl logs reference](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_logs/).
 For local Compose, use `docker compose logs --since=1h web` from `hub/`.
 
+#### UI: find the exact field or blocked workflow step
+
+For **Save handoff review** (`request.edit_handoff`) or **Close**
+(`request.transition`), inspect the event in the same web/service log stream:
+
+- `stage: form_validation`, `reason: form_invalid`: nothing was saved. Each entry in
+  `validation_errors` names the form, field, validation code and a safe explanation.
+  `required` means missing/empty (or an unchecked mandatory checkbox); `invalid` means
+  a format error, `invalid_choice` a selection no longer allowed, and `max_length` an
+  exceeded character limit. Configured length/number limits are included, not the value.
+- `form: request` identifies the main form. `targets[0]` means the first consumer row
+  (indices start at zero). `targets.management` identifies hidden form bookkeeping;
+  `missing_management_form` means reload the page before submitting again. Hidden
+  `revision`/`status` errors are logged too. Primary and consumer forms are both checked,
+  so a missing main field does not hide consumer errors.
+- `stage: workflow_validation` means the fields passed form validation but a workflow
+  rule rejected the operation. Read the fixed `reason` and `explanation`.
+- HTTP `200` on these rejection events means the invalid form was redisplayed, **not**
+  that the save or closure succeeded. Logs contain at most 200 field errors and flag
+  `errors_truncated` when this limit is reached.
+
+For example, an event for an empty Contract field includes these fields (other event
+metadata omitted):
+
+```json
+{
+  "operation": "request.edit_handoff",
+  "stage": "form_validation",
+  "reason": "form_invalid",
+  "explanation": "Nothing saved. Correct the listed fields and submit again.",
+  "validation_errors": [
+    {
+      "form": "request",
+      "field": "contract",
+      "code": "required",
+      "max_length": 16000,
+      "explanation": "This field is empty or missing; enter a value (or check the required confirmation)."
+    }
+  ]
+}
+```
+
+If you then attempt to close without a saved handoff, the next event reports
+`reason: handoff_review_not_saved`, with the explanation to save the review first.
+If the confirmation checkbox is unchecked, the field error instead identifies
+`handoff_reviewed` with `code: required`. These failures require correcting the form,
+not enabling additional debug logging. Even with no downstream targets, Summary,
+Contract, Compatibility, Availability and Availability details remain required.
+
+#### Rejection reason reference
+
 Look for `event: hub.request_rejected` and the matching `diagnostic_id`. Events include
 HTTP status, the route **pattern** (not the actual credential-bearing URL), operation,
 and, where known, request/attempt UUIDs. Recognized validation failures include a fixed
@@ -252,6 +304,12 @@ and, where known, request/attempt UUIDs. Recognized validation failures include 
 
 | Reason | Check |
 | --- | --- |
+| `form_invalid` | Read every `validation_errors` entry for field name, code, explanation and limits. |
+| `handoff_review_not_saved` | Save the handoff review successfully before closing, including when no consumers are affected. |
+| `handoff_confirmation_required` | Confirm human implementation validation and downstream review before closing. |
+| `request_revision_stale` | The request changed after the page was opened; reload and review the latest version. |
+| `handoff_wrong_workflow_stage` | Handoff review is allowed only after implementation and before closure. |
+| `request_invalid_transition` | Move to the next workflow stage; do not skip stages. |
 | `handoff_must_be_proposed` | Agent submissions must use `availability: proposed`; only human review attests deployment availability. |
 | `handoff_target_not_configured` | Every target must be an active configured consumer of the source project in this workspace. |
 | `handoff_*_missing_or_too_long` | Supply each required text field within its limit, even for no downstream impact. |
@@ -260,7 +318,7 @@ and, where known, request/attempt UUIDs. Recognized validation failures include 
 | `verification_contract` / `verification_artifact_mismatch` | The completion needs the validated verification envelope, not a command receipt or raw verifier result. |
 | `completion_evidence_mismatch` | Recheck accepted specification, source commit, clean feature branch and PR bindings. |
 | `claim_stale` | Claim expired, was cancelled, or no longer matches the accepted specification (HTTP 409). |
-| `validation_rejected` / `http_error` | Unclassified validation, form, authentication or HTTP rejection; inspect local artifacts and form errors without publishing their contents into logs. |
+| `validation_rejected` / `http_error` | Unclassified validation, authentication or HTTP rejection; inspect local artifacts and form errors without publishing their contents into logs. |
 
 These diagnostics deliberately exclude request/response bodies, arbitrary exception
 messages, authorization/cookies, query strings, code and handoff/specification prose.
