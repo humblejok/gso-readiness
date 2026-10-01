@@ -50,18 +50,29 @@ class GitHub:
         if not isinstance(matches, list) or matches:
             raise HostError("Recovery requires no existing PR for the retained branch, including closed PRs and other targets.")
 
-    def ensure_pr(self, state, path, text, checkpoint):
+    def find_pr(self, state):
         tree, repo = Path(state["worktree"]), self.host["github_repository"]
         matches = json.loads(self.run(tree, "gh", "pr", "list", "--repo", repo, "--head", state["branch"], "--base", state["base_branch"], "--state", "all", "--json", "url,state,headRefOid"))
+        if not isinstance(matches, list):
+            raise HostError("Invalid PR listing; no PR was created.")
         if matches:
             if len(matches) != 1 or matches[0]["state"] != "OPEN" or matches[0]["headRefOid"] != state["commit_sha"]:
                 raise HostError("An incompatible PR already exists. Inspect it; do not create a duplicate.")
-            url = matches[0]["url"]
-        else:
+            return validate_pr_url(matches[0]["url"], self.host["clone_url"])
+        return ""
+
+    def ensure_pr(self, state, path, text, checkpoint):
+        tree, repo = Path(state["worktree"]), self.host["github_repository"]
+        url = self.find_pr(state)
+        if not url:
+            if state.get("pr_submission_started"):
+                raise HostError("An earlier GitHub PR submission is uncertain and no matching PR is visible. Retry lookup later; do not create a duplicate.")
             body_path = path.parent / "pr-body.txt"
             if not body_path.exists():
                 with body_path.open("x", encoding="utf-8") as handle:
                     handle.write(text + verification_note(state))
+            state["pr_submission_started"] = True
+            checkpoint(path, state)
             url = self.run(tree, "gh", "pr", "create", "--repo", repo, "--head", state["branch"], "--base", state["base_branch"], "--title", "Implement " + state["item"]["display_id"], "--body-file", str(body_path))
         return validate_pr_url(url, self.host["clone_url"])
 
@@ -107,7 +118,7 @@ class AzureDevOps:
         if listing.get("value") != [] or type(listing.get("count")) is not int or listing["count"] != 0:
             raise AzureError("Recovery requires no existing PR for the retained branch, including closed PRs and other targets.")
 
-    def ensure_pr(self, state, path, text, checkpoint):
+    def find_pr(self, state):
         # Request two matches: one is reusable, more than one is ambiguous. We
         # include closed PRs so retries cannot silently create duplicates.
         listing = request(self.root, self.host, "GET", "/pullrequests", {
@@ -121,6 +132,12 @@ class AzureDevOps:
             if len(matches) != 1:
                 raise AzureError("Multiple Azure PRs match this branch; inspect them instead of creating a duplicate.")
             return self.validate(matches[0], state)
+        return ""
+
+    def ensure_pr(self, state, path, text, checkpoint):
+        existing = self.find_pr(state)
+        if existing:
+            return existing
         if state.get("pr_submission_started"):
             raise AzureError("An earlier Azure PR submission had an uncertain result and no matching PR is visible yet. Inspect the server and retry this saved attempt later; do not create a duplicate.")
         state["pr_submission_started"] = True

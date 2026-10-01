@@ -60,7 +60,7 @@ class RequestRecoveryTests(TestCase):
         self.attempt = str(uuid.uuid4())
         prior = engine.api.side_effect
         engine.api.side_effect = lambda state, data: (
-            {**self.item, "attempt_id": self.attempt}
+            {**self.item, "attempt_id": self.attempt, "implementation_binding": state.get("binding")}
             if data["action"] == "recover"
             else prior(state, data)
         )

@@ -25,7 +25,7 @@ def prepare(args):
         raise TargetedError(
             "Commit intended changes first, or explicitly allow a provisional dirty check."
         )
-    run_id = str(uuid.uuid4())
+    run_id = str(uuid.UUID(args.run_id)) if getattr(args, "run_id", None) else str(uuid.uuid4())
     report = {
         "schema_version": "1.0",
         "kind": "request-verification",
@@ -39,6 +39,13 @@ def prepare(args):
         "source": current,
     }
     directory = KIT_ROOT / "output" / "request-verifications" / run_id
+    if directory.exists() and getattr(args, "run_id", None):
+        existing, _ = read_json(directory / "request.json")
+        if existing != {"repository": str(root), "baseline_path": str(baseline),
+                        "baseline_sha256": checksum, "specification": approved, "report": report}:
+            raise TargetedError("Prepared successor verification changed; do not overwrite it.")
+        return {"status": "needs_verification", "request": str(directory / "request.json"),
+                "verification": str(directory / "verification.json")}
     directory.mkdir(parents=True, exist_ok=False)
     write_new_json(
         directory / "request.json",

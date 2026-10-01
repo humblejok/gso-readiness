@@ -1,6 +1,86 @@
 # Implement accepted Hub requests
 
-## Recover an expired claim with a retained commit
+## Recommended: resume retained work (protocol v2)
+
+Deploy the updated **Hub first**, then update the project's entire kit and open a fresh
+VS Code chat. Protocol v2 needs no new database migration or token scope. Back up local
+Git-ignored helper customizations and preserve the complete `output/` tree. Do not
+delete state, worktrees, pending completions or evidence. New work is blocked before
+claiming if the Hub lacks the required capabilities.
+
+Use the same token actor and original checkout:
+
+```text
+/implement-requests resume=.github/graphify-review/output/request-implementations/<attempt>/state.json
+```
+
+For the blocked adoption in the October recovery report:
+
+```text
+/implement-requests resume=.github/graphify-review/output/request-implementations/d392275c-9649-40c1-b5bf-24180e669ce0/adoption/state.json
+```
+
+The path identifies a **local state file**, not a Hub claim/request UUID. Resume does
+not rename the branch, rewrite evidence or create a replacement PR. It inspects the
+current Hub state, approved specification, actual clean worktree, pinned commit,
+configured destinations and existing provider PR, then either:
+
+- Confirms/syncs an identical valid completion without another PR.
+- Creates a same-actor successor under `<attempt>/resume/`, retaining the predecessor
+  and its rejected completion. The actor's running predecessor is cancelled (or kept
+  expired). The successor pins source/target branches, commit and existing PR and
+  requires a new server-issued verification run. Lost responses reuse this identity.
+- Stops for human review if scope, credentials, destinations or source changed; another
+  worker owns the claim; a human cancelled/completed the request; uncommitted work has
+  expired; or the existing PR is incompatible/ambiguous. No reset or overwrite occurs.
+
+Use the **returned successor state path** thereafter. The manager directly invokes
+Request Implementation Verifier for readiness and fresh committed verification, uses
+native tests and configured Sonar checks, builds the source-bound envelope, then
+delivers. The retained PR must remain open/active with the pinned source commit and
+target (and no Azure auto-completion). A merged PR needs human reconciliation; resume
+does not reopen it. Preserved handoff proposals are rechecked against current consumers.
+
+Terminal equivalents (PowerShell; run each separately):
+
+```powershell
+& .\.graphify-review-venv\Scripts\python.exe .\.github\graphify-review\scripts\implement_requests.py resume --repository . --state "PATH_TO_RETAINED_STATE"
+& .\.graphify-review-venv\Scripts\python.exe .\.github\graphify-review\scripts\implement_requests.py prepare-verification --repository . --state "RETURNED_SUCCESSOR_STATE"
+```
+
+The second command prepares inputs; **it does not perform verification**. Prefer the
+slash command to orchestrate the real independent verifier, envelope build and delivery.
+Never fabricate verifier output, relabel a source branch, edit pending evidence or
+extend timestamps in Django. If the successor expires, resume its explicit state path.
+
+The Hub details page shows claim IDs, server-clock expiry, branch agreements, retained
+PRs, successor links and individual failed completion checks. `preflight` validates
+evidence before a push/PR; completion repeats checks afterward to handle races. HTTP
+400 is not a transient error: use the reported failed check, not blind sync retries.
+Uncertain GitHub/Azure PR creation is checkpointed and looked up before any retry.
+
+## Corrective adoption after a confirmed failure
+
+For an already committed correction extending a failed attempt:
+
+```text
+/implement-requests adopt=<failed-state-path> worktree=<path> branch=<correction/branch> commit=<full-SHA>
+```
+
+The predecessor must be the same actor's confirmed failed attempt, with its recorded
+commit and no PR. Scope must be unchanged except the failure's revision increment.
+The separate worktree must be clean in the same repository and extend that commit
+linearly without merges. Original branch/base/destination checks still apply. The
+manager registers the explicit agreement, obtains fresh independent committed
+verification, then creates the correction branch/PR. A `correction/` prefix alone
+does not authorize completion. Normal requests retain `feature/REQ-<UUID>` branches.
+
+Use **resume, not adopt**, if a PR or pending completion already exists. Legacy local
+September adoption states are upgraded through a successor, never by changing their
+saved payload or loosening all Hub branch checks. If you already completed the request
+manually in the UI, preserve its files and stop; recovery cannot override that decision.
+
+## Legacy narrower recovery: expired claim without PR
 
 Update **both the Hub application and the project's kit**, restart the Hub application, and open a fresh VS Code chat. No database migration or additional token scope is needed. Use the same Hub token actor that acquired the expired claim.
 

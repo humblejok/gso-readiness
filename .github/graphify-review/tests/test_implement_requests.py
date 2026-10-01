@@ -21,6 +21,7 @@ from request_contract import (
     validate_request_report,
 )
 from targeted_contract import TargetedError, digest
+from request_protocol import PROTOCOL
 
 
 class RequestImplementationTests(TestCase):
@@ -37,6 +38,7 @@ class RequestImplementationTests(TestCase):
             "clone_url": "",
             "display_id": display_id(identifier),
             "related_projects": [],
+            "implementation_protocol": PROTOCOL,
             "analysis": {
                 "project_kind": "backend",
                 "specification": "Enable safe mode with regression coverage.",
@@ -490,12 +492,14 @@ class RequestRoutingTests(TestCase):
             "kind": "request",
             "root": "/unused",
             "hub_url": "https://hub.example.invalid",
-            "item": {"id": identifier, "repository_external_id": "repo:orders"},
+            "item": {"id": identifier, "repository_external_id": "repo:orders", "implementation_protocol": PROTOCOL},
+            "binding": {"branch": "feature/REQ-" + identifier, "base_branch": "main", "commit_sha": "", "pull_request": "", "predecessor_attempt_id": ""},
         }
         with (
             mock.patch.object(engine, "check_credential_context") as binding,
             mock.patch.object(engine, "request_json") as api,
         ):
+            api.return_value = {"implementation_binding": state["binding"]}
             engine.api(
                 state,
                 {"action": "claim", "revision": 3, "request_id": str(uuid.uuid4())},

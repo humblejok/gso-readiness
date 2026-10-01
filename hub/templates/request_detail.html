@@ -46,6 +46,20 @@
 </section>
 <section class="panel"><h2>History</h2>
 <h3>Recent implementation attempts</h3>
+<p>Resume retained work from its original checkout with <code>/implement-requests resume=&lt;path-to-state.json&gt;</code>. Keep the same token identity. The helper checks the Hub and existing PR before continuing; it never merges a PR or closes this request.</p>
+{% for attempt in implementations %}
+<article class="panel"><h4>Claim <code>{{ attempt.pk }}</code></h4>
+<p>Status: {% if attempt.claim_expired %}<strong>Expired (server clock)</strong>{% else %}{{ attempt.status|title }}{% endif %} · Expires {{ attempt.expires_at }} · Approved revision {{ attempt.revision }}</p>
+{% if attempt.agreement %}<p>Source branch: <code>{{ attempt.agreement.branch }}</code> → Target: <code>{{ attempt.agreement.base_branch }}</code></p>
+{% if attempt.agreement.commit_sha %}<p>Pinned commit: <code>{{ attempt.agreement.commit_sha }}</code></p>{% endif %}
+{% if attempt.agreement.pull_request %}<p><a href="{{ attempt.agreement.pull_request }}" rel="noopener noreferrer">Retained PR</a></p>{% endif %}
+{% else %}<p>Legacy claim: canonical feature-branch policy. A local correction adoption needs explicit resume registration; repeatedly syncing will not register it.</p>{% endif %}
+{% if attempt.data.resume_of %}<p>Successor of <code>{{ attempt.data.resume_of }}</code>. Previous attempt history is preserved.</p>{% endif %}
+{% if attempt.rejection_checks %}<p><strong>Last completion rejected:</strong> {{ attempt.data.last_rejection.at }}</p><ul>{% for code, explanation in attempt.rejection_checks %}<li><code>{{ code }}</code>: {{ explanation }}</li>{% endfor %}</ul><p>Use the retained attempt's resume command to assess supported recovery. Do not edit verification JSON to silence a check.</p>{% endif %}
+{% if attempt.claim_expired or attempt.status == 'expired' %}<p>An expired claim cannot complete. Resume can acquire a same-actor successor for unchanged approved scope and retained committed work, then requires fresh independent verification.</p>{% endif %}
+{% if attempt.status == 'cancelled' %}<p>This claim is no longer authorized. Continue an existing successor if one was created; otherwise review the request's human changes. Do not revive this claim.</p>{% endif %}
+</article>
+{% endfor %}
 {% for attempt in implementations %}<article><p><strong>{{ attempt.status|title }}</strong> · {{ attempt.created_at }} · Claim expires {{ attempt.expires_at }}</p><p class="preserve-lines">{{ attempt.comment }}</p>{% if attempt.data.completion.pull_request %}<p><a href="{{ attempt.data.completion.pull_request }}" rel="noopener noreferrer">Pull request</a> · {{ attempt.data.completion.commit_sha }}</p>{% endif %}<details><summary>Approved specification at claim (revision {{ attempt.revision }})</summary><pre>{{ attempt.specification.analysis.specification }}</pre></details></article>{% empty %}<p>No implementation attempts.</p>{% endfor %}
 {% for activity in activities %}<article><h3>{{ activity.get_action_display }} · Revision {{ activity.revision }}</h3><p class="muted">{{ activity.actor }} · {{ activity.created_at }}</p><p>{% if activity.previous_status and activity.previous_status != activity.status %}{{ activity.previous_status|title }} → {% endif %}{{ activity.get_status_display }} · {{ activity.get_kind_display }}</p><details><summary>Description at this revision</summary><p class="preserve-lines request-description">{{ activity.description }}</p></details></article>{% endfor %}
 {% for activity in activities %}{% if activity.analysis %}<details><summary>Analysis at revision {{ activity.revision }}</summary><pre>{{ activity.analysis.specification }}</pre><h4>New interfaces</h4><pre>{{ activity.analysis.new_interfaces }}</pre><h4>Changed interfaces</h4><pre>{{ activity.analysis.changed_interfaces }}</pre><h4>Breaking changes</h4><pre>{{ activity.analysis.breaking_changes }}</pre></details>{% endif %}{% endfor %}

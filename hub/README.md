@@ -46,6 +46,15 @@ Requests start **Open**. Assign a project in the create/edit form to make a requ
 
 The creator can **Cancel request** while Open, Analyzed or Specified, but not after implementation or closure. Cancelled and closed requests are read-only. Changing the description/type/project resets the request to Open and clears its current analysis (history retains the old version). Editing a Specified analysis returns it to Analyzed for renewed acceptance. Cancelled requests cannot be reopened automatically.
 
+Request implementation protocol **v2** registers source/target branches on claims and
+supports explicit corrective adoption and retained-PR resume. Deploy the Hub first,
+then update the full kit and start a fresh Copilot chat. No additional migration/scope
+is needed. The request page now shows effective claim expiry, branch agreement,
+successor links, retained PRs and exact failed evidence checks. Use
+`/implement-requests resume=<local-state-path>` from the original checkout; no Django
+shell edits, branch renames or manual verification rewrites are needed. See
+[recovery steps and limitations](../docs/request_implementation_workflow.md).
+
 Owners, admins and reviewers can create, edit and accept requests; viewers can browse and may cancel their own eligible requests. Search and type/status filters are available on the list. Each creation, edit and transition records its author, time, revision, project, description and analysis snapshot. Stale browser/API submissions cannot overwrite edits, cancellation or another analysis. Read-only subscriptions preserve browsing and export access.
 
 For existing installations, back up the database and run `.finding-hub-venv/bin/python hub/manage.py migrate` (Windows: `.\.finding-hub-venv\Scripts\python.exe hub\manage.py migrate`). Migration **0009** adds analysis, project assignment and Cancelled status to the existing tenant-isolated request/history tables. Existing requests retain status/history but have no assigned project or analysis; select the project before analysis. Legacy Analyzed requests need a complete analysis entered before acceptance (or edit the request to return it to Open). Restart the application. Do not migrate a production database with development settings.

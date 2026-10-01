@@ -5,6 +5,7 @@ from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
 from django.http import Http404
 from django.shortcuts import redirect
+from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
 from . import change_requests, forms, handoffs
@@ -17,6 +18,7 @@ from .models import (
     RequestHandoff,
     RequestImplementation,
 )
+from .request_protocol import CHECKS
 from .services import require_writes
 from .views import get_object_or_404, page, role_required, workspace_url
 
@@ -184,6 +186,17 @@ def detail(request, organization_id, pk):
                 form,
                 target_forms if action == "edit_handoff" else None,
             )
+    implementations = list(
+        RequestImplementation.objects.filter(change_request=item).order_by("-created_at")[:25]
+    )
+    for attempt in implementations:
+        attempt.claim_expired = attempt.status == "running" and attempt.expires_at <= timezone.now()
+        attempt.rejection_checks = [
+            (code, CHECKS[code])
+            for code in attempt.data.get("last_rejection", {}).get("checks", [])
+            if code in CHECKS
+        ]
+        attempt.agreement = attempt.data.get("binding") or {}
     return page(
         request,
         "request_detail.html",
@@ -197,9 +210,7 @@ def detail(request, organization_id, pk):
         downstream_handoffs=RequestHandoff.objects.filter(source_request=item).select_related(
             "target", "downstream_request"
         ),
-        implementations=RequestImplementation.objects.filter(change_request=item).order_by(
-            "-created_at"
-        )[:25],
+        implementations=implementations,
         can_cancel=can_cancel,
         activities=Paginator(
             ChangeRequestActivity.objects.filter(change_request=item).order_by("-revision"), 20

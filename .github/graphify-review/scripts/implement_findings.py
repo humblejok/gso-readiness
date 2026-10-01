@@ -17,6 +17,7 @@ from git_providers import describe, provider_for
 from hub_findings import context, request_json
 from publish_review import PublishError, configured_hub
 from request_contract import RequestArtifactError
+from request_protocol import ProtocolError
 from revalidate_finding import prepare as prepare_targeted
 from revalidate_finding import source
 from review_settings import load_settings, process_environment
@@ -145,10 +146,19 @@ def plan(args):
 
 
 def api(state, data):
+    if state.get("kind") == "request" and data.get("action") == "claim":
+        from request_protocol import require_protocol
+        require_protocol(state["item"])
+        if not state.get("binding"):
+            raise WorkError("Legacy request claim has no branch agreement. Use resume before continuing.")
+        data = {**data, "binding": state["binding"]}
     check_credential_context(state)
     if state.get("kind") == "request":
-        return request_json(Path(state["root"]), "POST", f"/api/v1/requests/{uuid.UUID(state['item']['id'])}/implementation",
-                            {**data, "repository_external_id": state["item"]["repository_external_id"]}, state["hub_url"])
+        result = request_json(Path(state["root"]), "POST", f"/api/v1/requests/{uuid.UUID(state['item']['id'])}/implementation",
+                              {**data, "repository_external_id": state["item"]["repository_external_id"]}, state["hub_url"])
+        if data["action"] == "claim" and result.get("implementation_binding") != state["binding"]:
+            raise WorkError("Hub did not confirm the exact branch agreement. No remote write is authorized.")
+        return result
     return request_json(Path(state["root"]), "POST", f"/api/v1/findings/{uuid.UUID(state['item']['finding_id'])}/implementation", data, state["hub_url"])
 
 
@@ -297,6 +307,12 @@ def prepare_verification(path, state):
 
 
 def start(path, state):
+    if state.get("kind") == "request" and state.get("resumption"):
+        from implement_requests import start_resumption
+        return start_resumption(path, state)
+    if state.get("kind") == "request" and state.get("adoption"):
+        from implement_requests import start_adoption
+        return start_adoption(path, state)
     if state.get("kind") == "request" and state.get("recovery"):
         from implement_requests import start_recovery as start_request_recovery
         return start_request_recovery(path, state)
@@ -424,6 +440,9 @@ def deliver(path, state, args):
     report = verify_source(state, args.report, clean=True)
     if report["source"]["commit_sha"] != state["commit_sha"]:
         raise WorkError("Commit changed after revalidation.")
+    if state.get("kind") == "request" and state.get("adoption") and not state.get("resumption"):
+        from implement_requests import check_adoption
+        check_adoption(path, state, require_no_pr=state["stage"] == "committed")
     tree = Path(state["worktree"])
     provider = bound_provider(state)
     provider.preflight()
@@ -432,15 +451,34 @@ def deliver(path, state, args):
     claimed = api(state, {"action": "claim", "revision": state["item"]["revision"], "request_id": state["request_id"]})
     if claimed["attempt_id"] != state["attempt_id"]:
         raise WorkError("Unexpected implementation claim.")
+    if state.get("kind") == "request" and state.get("adoption"):
+        from implement_requests import validate_adoption_claim
+        validate_adoption_claim(state, claimed)
     handoff = None
     if state.get("kind") == "request":
         from implement_requests import prepare_handoff
-        handoff = prepare_handoff(getattr(args, "handoff_file", None), claimed)
+        handoff = prepare_handoff(getattr(args, "handoff_file", None) or state.get("resume_handoff_path"), claimed)
     text = summary(args.summary_file)
+    if state.get("kind") == "request":
+        from request_protocol import require_protocol
+        require_protocol(claimed)
+        if claimed.get("implementation_binding") != state.get("binding"):
+            raise WorkError("Hub branch agreement differs; resume instead of pushing or creating another PR.")
+        if state.get("resumption"):
+            from implement_requests import retained_delivery_checks
+            retained_delivery_checks(state)
+        api(state, {"action": "preflight", "attempt_id": state["attempt_id"], "completion": {
+            "outcome": "succeeded", "comment": text, "report": report,
+            "pull_request": state.get("pull_request", ""), "commit_sha": state["commit_sha"],
+            "base_branch": state["base_branch"], **({"handoff": handoff} if handoff is not None else {})}})
     if state["stage"] == "committed":
-        if remote_sha(tree, state["remote"], state["branch"]) not in {state["base_commit"], state["commit_sha"]}:
-            raise WorkError("Remote feature branch diverged; no overwrite was attempted.")
-        run(tree, "git", "push", state["remote"], "HEAD:refs/heads/" + state["branch"])
+        if state.get("kind") == "request" and state.get("adoption"):
+            from implement_requests import push_adoption
+            push_adoption(state)
+        else:
+            if remote_sha(tree, state["remote"], state["branch"]) not in {state["base_commit"], state["commit_sha"]}:
+                raise WorkError("Remote feature branch diverged; no overwrite was attempted.")
+            run(tree, "git", "push", state["remote"], "HEAD:refs/heads/" + state["branch"])
         state["stage"] = "pushed"
         save(path, state)
     if state["stage"] == "pushed":
@@ -460,14 +498,17 @@ def deliver(path, state, args):
 def main(argv=None, *, kind="finding"):
     parser = argparse.ArgumentParser(description=__doc__)
     actions = ("plan", "start", "commit", "deliver", "fail", "sync")
-    parser.add_argument("action", choices=actions + ("retry", "prepare-verification"))
+    parser.add_argument("action", choices=actions + ("retry", "prepare-verification") + (("adopt", "resume") if kind == "request" else ()))
     parser.add_argument("--repository", default=".")
     if kind == "request":
         parser.add_argument("--request", help="Hub request UUID displayed on its details page")
         parser.add_argument("--handoff-file", help="Proposal JSON saved for human review at closure")
+        parser.add_argument("--worktree", help="Existing clean correction worktree for adopt")
+        parser.add_argument("--branch", help="Exact correction branch for adopt")
+        parser.add_argument("--commit-sha", help="Exact full correction commit SHA for adopt")
     else:
         parser.add_argument("--finding", help="Hub finding UUID (resolve the short ID through the queue)")
-    parser.add_argument("--remote", default="origin")
+    parser.add_argument("--remote", default=None)
     parser.add_argument("--base-branch")
     parser.add_argument("--base-commit")
     parser.add_argument("--state")
@@ -479,6 +520,7 @@ def main(argv=None, *, kind="finding"):
     lock_owned = False
     try:
         if args.action == "plan":
+            args.remote = args.remote or "origin"
             if kind == "request":
                 from implement_requests import plan as plan_request
                 result = plan_request(args)
@@ -495,7 +537,13 @@ def main(argv=None, *, kind="finding"):
                 raise WorkError("State belongs to another workflow. Use its original implementation command.")
             if Path(state["root"]) != Path(args.repository).resolve():
                 raise WorkError("State belongs to a different checkout. Use its original --repository.")
-            if args.action == "start":
+            if args.action == "resume":
+                from implement_requests import resume
+                result = resume(path, state, args)
+            elif args.action == "adopt":
+                from implement_requests import adopt
+                result = adopt(path, state, args)
+            elif args.action == "start":
                 result = start(path, state)
             elif args.action == "retry":
                 result = retry(path, state)
@@ -509,7 +557,7 @@ def main(argv=None, *, kind="finding"):
                 if not state.get("attempt_id") or state["stage"] in {"completion_pending", "completed"}:
                     raise WorkError("No active claim, or completion already pending. Use sync for an uncertain completion.")
                 if state.get("pr_submission_started") and not state.get("pull_request"):
-                    raise WorkError("Azure PR creation outcome is uncertain. Retry deliver with the same state/report/summary or inspect the server; do not replace it with a failure.")
+                    raise WorkError("PR creation outcome is uncertain. Resume/reconcile the existing provider submission; do not replace it with a failure or create another PR.")
                 store_completion(path, state, {"outcome": "failed", "comment": summary(args.summary_file), "report": None,
                                               "pull_request": state.get("pull_request", ""), "commit_sha": state.get("commit_sha", ""), "base_branch": state["base_branch"]})
                 result = sync(path, state)
@@ -518,8 +566,11 @@ def main(argv=None, *, kind="finding"):
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except Exception as exc:  # noqa: BLE001 - Sanitized tool/credential boundary; preserve source and branches.
-        message = str(exc) if isinstance(exc, (WorkError, PublishError, HostError, AzureError, TargetedError, RequestArtifactError)) else "Implementation operation blocked. Inspect saved state and inputs; no destructive cleanup was attempted."
-        details = {"error_code": exc.code} if isinstance(exc, RequestArtifactError) else {}
+        message = str(exc) if isinstance(exc, (WorkError, PublishError, HostError, AzureError, TargetedError, RequestArtifactError, ProtocolError)) else "Implementation operation blocked. Inspect saved state and inputs; no destructive cleanup was attempted."
+        details = {"error_code": exc.code} if isinstance(exc, (RequestArtifactError, ProtocolError)) else {}
+        from hub_findings import HubRequestError
+        if isinstance(exc, HubRequestError):
+            details.update(http_status=exc.status, retryable=exc.retryable, failed_checks=exc.checks)
         print(json.dumps({"status": "blocked", "state": args.state, "message": message, **details}), file=sys.stderr)
         return 2
     finally:

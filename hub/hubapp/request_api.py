@@ -14,6 +14,7 @@ from .api import paginated, permitted, repository_filter
 from .diagnostics import rejection
 from .git_host_contract import HostError
 from .models import ChangeRequest, Repository, RequestImplementation
+from .request_protocol import CHECKS
 from .services import rate_limit
 from .targeted_contract import TargetedError
 
@@ -138,11 +139,30 @@ class RequestImplementationAPI(APIView):
                 or data.get("repository_external_id") != item.repository_external_id
             ):
                 raise change_requests.RequestConflict("Request project changed.")
-            if data.get("action") in ("claim", "recover", "complete"):
+            if data.get("action") in ("claim", "recover", "complete", "resume", "preflight"):
                 operation = "request.implementation." + data["action"]
             attempt_id = data.get("attempt_id")
             fields = {"action", "revision", "request_id", "repository_external_id"}
-            if (set(data) == fields and data["action"] == "claim") or (
+            if (
+                set(data)
+                == fields | {"predecessor_attempt_id", "binding", "previous_completion_digest"}
+                and data["action"] == "resume"
+            ):
+                attempt, current, created = request_work.resume_claim(
+                    item.pk,
+                    data["revision"],
+                    data["request_id"],
+                    data["predecessor_attempt_id"],
+                    request.auth.pk,
+                    data["repository_external_id"],
+                    data["binding"],
+                    data["previous_completion_digest"],
+                )
+                return Response(
+                    {**current, "attempt_id": str(attempt.pk), "expires_at": attempt.expires_at},
+                    status=201 if created else 200,
+                )
+            if (set(data) in (fields, fields | {"binding"}) and data["action"] == "claim") or (
                 set(data) == fields | {"predecessor_attempt_id"} and data["action"] == "recover"
             ):
                 if data["action"] == "recover":
@@ -161,15 +181,18 @@ class RequestImplementationAPI(APIView):
                         data["request_id"],
                         request.auth.pk,
                         data["repository_external_id"],
+                        binding=data.get("binding"),
                     )
                 return Response(
                     {**current, "attempt_id": str(attempt.pk), "expires_at": attempt.expires_at},
                     status=201 if created else 200,
                 )
-            if (
-                set(data) == {"action", "attempt_id", "completion", "repository_external_id"}
-                and data["action"] == "complete"
-            ):
+            if set(data) == {
+                "action",
+                "attempt_id",
+                "completion",
+                "repository_external_id",
+            } and data["action"] in {"complete", "preflight"}:
                 return Response(
                     request_work.complete(
                         item.pk,
@@ -177,9 +200,19 @@ class RequestImplementationAPI(APIView):
                         data["completion"],
                         request.auth.pk,
                         data["repository_external_id"],
+                        validate_only=data["action"] == "preflight",
                     )
                 )
             raise ValidationError("Unknown request implementation action.")
+        except request_work.CompletionMismatch as error:
+            rejection(request, operation, error, attempt_id)
+            request._request.hub_rejection["checks"] = [
+                {"code": key, "explanation": CHECKS[key]} for key in error.checks
+            ]
+            details = {"error_code": "completion_evidence_mismatch", "checks": error.checks}
+            # Diagnostics survive the rolled-back completion transaction. No evidence is stored.
+            request_work.record_rejection(item.pk, attempt_id, request.auth.pk, details)
+            return Response(details, status=400)
         except change_requests.RequestConflict as error:
             rejection(request, operation, error, attempt_id)
             return Response({"errors": error.messages}, status=409)

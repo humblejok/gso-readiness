@@ -13,6 +13,15 @@ from export_review import read_json, write_new_json
 from publish_review import PublishError, configured_hub, opener_for, token_for, workspace_headers
 from review_settings import load_settings
 from targeted_contract import validate_targeted
+from request_protocol import CHECKS
+
+
+class HubRequestError(PublishError):
+    def __init__(self, message, status, checks=()):
+        super().__init__(message)
+        self.status = status
+        self.checks = list(checks)
+        self.retryable = status in {429, 502, 503, 504}
 
 
 def request_json(root, method, path, data=None, expected_hub=None):
@@ -36,6 +45,15 @@ def request_json(root, method, path, data=None, expected_hub=None):
     except urllib.error.HTTPError as exc:
         status = exc.code
         diagnostic = ""
+        checks = []
+        try:
+            raw_error = exc.read(8193)
+            if len(raw_error) <= 8192:
+                details = json.loads(raw_error.decode("utf-8"))
+                if isinstance(details, dict) and details.get("error_code") == "completion_evidence_mismatch" and isinstance(details.get("checks"), list):
+                    checks = [key for key in CHECKS if key in details["checks"]]
+        except (OSError, ValueError, UnicodeError, http.client.HTTPException):
+            pass
         try:
             diagnostic = str(uuid.UUID(exc.headers.get("X-Hub-Request-ID", "")))
         except (ValueError, TypeError, AttributeError):
@@ -50,7 +68,11 @@ def request_json(root, method, path, data=None, expected_hub=None):
         message = messages.get(status, "Hub request failed or redirected. Redirects are blocked. A write may have completed; retry only the identical saved request.")
         if diagnostic:
             message += f" Hub diagnostic ID: {diagnostic} (HTTP {status}); ask the Hub operator to find this ID in the pod logs."
-        raise PublishError(message) from None
+        if checks:
+            message += " Failed checks: " + "; ".join(key + ": " + CHECKS[key] for key in checks)
+        if status == 400:
+            message += " This is not a transient failure. Preserve the payload; use request resume for supported recovery, not repeated sync."
+        raise HubRequestError(message, status, checks) from None
     except (OSError, ValueError, urllib.error.URLError, http.client.HTTPException) as exc:
         raise PublishError("Hub connection/TLS/response failure. Check proxy/CA settings. A write may have completed; retain its request ID and retry unchanged.") from exc
 

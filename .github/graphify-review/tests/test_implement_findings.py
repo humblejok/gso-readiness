@@ -69,7 +69,9 @@ class ImplementationTests(unittest.TestCase):
             return original_run(root, *command)
         def fake_api(state, data):
             if data["action"] == "claim":
-                return {**self.item, "attempt_id": self.attempt}
+                return {**self.item, "attempt_id": self.attempt, "implementation_binding": state.get("binding")}
+            if data["action"] == "preflight":
+                return {"status": "ready_for_delivery"}
             self.completions.append(data)
             if self.fail_sync:
                 raise PublishError("Uncertain response")
